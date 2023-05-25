@@ -6,11 +6,14 @@ A minimal scripting language and command runner.
 
 ```txt
 # hello.rum
-things
+
+
+
 ```
 
 ```sh
 # myprogram.sh
+
 echo "== Arguments =="
 echo $0
 

@@ -1,6 +1,91 @@
 use std::str::FromStr;
+use lalrpop_util::ParseError;
+
+use super::SemanticError;
+use super::types::Numeric;
+use super::ast;
 
 grammar;
 
-pub Term = { Num, "(" <Term> ")" };
-pub Num: i32 = r"[0-9]+" => i32::from_str(<>).unwrap();
+extern {
+    type Error = SemanticError;
+    type Location = usize;
+}
+
+pub Exprs = Expr*;
+
+pub Expr: ast::Expr<'input> = {
+    Path => ast::Expr::Path(<>),
+    Num => ast::Expr::Number(<>),
+    ID => ast::Expr::Identifier(<>),
+    Symbol => ast::Expr::Symbol(<>),
+    String => ast::Expr::String(<>),
+    Value => ast::Expr::Value(<>),
+    "_" => ast::Expr::Placeholder(ast::MatchSize::One),
+    "..." => ast::Expr::Placeholder(ast::MatchSize::ZeroOrMore),
+    "(" <Expr*> ")" => ast::Expr::List(<>),
+    "[" <Expr*> "]" => ast::Expr::Vector(<>),
+    "{" <(<Expr> "=>" <Expr>)*> "}" => ast::Expr::Map(<>),
+};
+
+Path: Vec<&'input str> = {
+    "`" <mut v:(<IdentifierLiteral> "/")*> <e:IdentifierLiteral?> "`" => match e {
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
+    }
+};
+
+Num: Numeric = {
+    Digits =>? Numeric::from_str(<>)
+        .map_err(|_| ParseError::User {
+            error: SemanticError::NumberLiteralOverflow
+        })
+};
+
+String: &'input str = {
+    <s:StringLiteral> => &s[1..s.len()-1]
+}
+
+Value: &'input str = {
+    <s:ValueLiteral> => &s[1..]
+}
+
+ID: &'input str = {
+    <IdentifierLiteral>,
+    <"*">,
+    <"/">,
+    <"+">,
+    <"-">,
+}
+
+match {
+    "+",
+    "-",
+    "*",
+    "/",
+    "\"",
+    "`",
+    "(",
+    ")",
+    "{",
+    "}",
+    "[",
+    "]",
+    "_",
+    "=>",
+    "...",
+
+    r"[0-9]+" => Digits,
+    r#""(\\\\|\\"|[^"\\])*""# => StringLiteral,
+    r"#[A-Z][A-Za-z]*" => ValueLiteral,
+} else {
+    r"[\w|\$](\w|-|:|\.)*" => IdentifierLiteral,
+    r":\w+" => Symbol,
+} else {
+    // Ignore whitespace and comments
+    r"\s*" => { },
+    r";[^\n\r]*[\n\r]*" => { },
+}
