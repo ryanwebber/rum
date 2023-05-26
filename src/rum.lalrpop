@@ -23,6 +23,7 @@ pub Expr: ast::Expr<'input> = {
     Value => ast::Expr::Value(<>),
     "_" => ast::Expr::Placeholder(ast::MatchSize::One),
     "..." => ast::Expr::Placeholder(ast::MatchSize::ZeroOrMore),
+    "'" <Expr> => ast::builtin::quote(<>),
     "(" <Expr*> ")" => ast::Expr::List(<>),
     "[" <Expr*> "]" => ast::Expr::Vector(<>),
     "{" <(<Expr> "=>" <Expr>)*> "}" => ast::Expr::Map(<>),
@@ -68,6 +69,7 @@ match {
     "/",
     "\"",
     "`",
+    "'",
     "(",
     ")",
     "{",
@@ -82,7 +84,7 @@ match {
     r#""(\\\\|\\"|[^"\\])*""# => StringLiteral,
     r"#[A-Z][A-Za-z]*" => ValueLiteral,
 } else {
-    r"[\w|\$](\w|-|:|\.)*" => IdentifierLiteral,
+    r"[\w|\$](\w|-|:|\.)*\??" => IdentifierLiteral,
     r":\w+" => Symbol,
 } else {
     // Ignore whitespace and comments

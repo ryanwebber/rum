@@ -1,12 +1,13 @@
 (def-type vec3 (x y z))
 
 (set (meta-table vec3) :typedoc
-    { :x => float
-      :y => float
-      :z => float })
+    (make-table
+        { :x => float
+          :y => float
+          :z => float }))
 
 (set (meta-table vec3) :call
-    (lambda (a b c) (new vec3 (a b c))))
+    (lambda (a b c) (new vec3 '(a b c))))
 
 (def-component :position vec3)
 
@@ -23,8 +24,10 @@
 (def-local mything { 1 => 2 })
 
 (def-obj "Player"
-    (make-component :position (0 0 0))
+    (make-component :position (vec3 (0 0 0)))
     (make-component :sprite `$res/path/to/script.png`))
+
+(def-fn add (a b) )
 
 (match mything
     {
@@ -39,26 +42,38 @@
 
 (include `$res/path/to/script.rum`)
 
+; Value literals
 (#True #False #FooBar)
 
+; Metaprogramming
+(equals?
+    (add a b)
+    (eval ('add 'a 'b)))
+
 ; Language Types:
-;   - List
-;   - Map
-;   - Numbers
-;   - Path
-;   - Placeholder
-;   - Strings
-;   - Symbol
-;   - Values
-;   - Vector
+;   * List
+;   * Map
+;   * Numbers
+;   * Path
+;   * Placeholder
+;   * Strings
+;   * Symbol
+;   * Values
+;   * Vector
 
 ; VM Types:
-;   - Boolean
-;   - Extern
-;   - List
-;   - Numbers
-;   - Strings
-;   - Symbols
-;   - Table
-;   - Unbound
-;   - Vector
+;   * Boolean
+;   * Extern
+;   * List
+;   * Numbers
+;   * Strings
+;   * Symbols
+;   * Table
+;   * Unbound
+;   * Vector
+
+; Builtins:
+;   * def-fn
+;   * def-var
+;   * def-const
+;   * def-macro

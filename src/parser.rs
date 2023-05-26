@@ -18,7 +18,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_expr() {
+    fn test_parse_expr() {
         assert!(rum::ExprParser::new().parse("22").is_ok());
         assert!(rum::ExprParser::new().parse("(22)").is_ok());
         assert!(rum::ExprParser::new().parse("((((22))))").is_ok());
@@ -59,10 +59,12 @@ mod tests {
         assert!(rum::ExprParser::new().parse("#foo").is_err());
         assert!(rum::ExprParser::new().parse("#FooBar").is_ok());
         assert!(rum::ExprParser::new().parse("+").is_ok());
+        assert!(rum::ExprParser::new().parse("'()").is_ok());
+        assert!(rum::ExprParser::new().parse("(')").is_err());
     }
 
     #[test]
-    fn parse_exprs() {
+    fn test_parse_exprs() {
         assert!(rum::ExprsParser::new().parse(include_str!("samples/core.rum")).is_ok());
     }
 }

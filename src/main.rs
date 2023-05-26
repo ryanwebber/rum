@@ -1,4 +1,5 @@
 mod ast;
+mod interner;
 mod interpreter;
 mod parser;
 mod types;

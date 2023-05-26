@@ -1,5 +1,6 @@
 use crate::types::Numeric;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Expr<'input> {
     Identifier(&'input str),
     Number(Numeric),
@@ -13,7 +14,16 @@ pub enum Expr<'input> {
     Vector(Vec<Expr<'input>>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MatchSize {
     ZeroOrMore,
     One,
+}
+
+pub mod builtin {
+    use super::*;
+
+    pub fn quote<'input>(expr: Expr<'input>) -> Expr<'input> {
+        Expr::List(vec![Expr::Identifier("quote"), expr])
+    }
 }
