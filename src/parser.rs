@@ -56,7 +56,7 @@ mod tests {
         assert!(rum::ExprParser::new().parse("``").is_ok());
         assert!(rum::ExprParser::new().parse("#True").is_ok());
         assert!(rum::ExprParser::new().parse("#Foo").is_ok());
-        assert!(rum::ExprParser::new().parse("#foo").is_err());
+        assert!(rum::ExprParser::new().parse("#foo").is_ok());
         assert!(rum::ExprParser::new().parse("#FooBar").is_ok());
         assert!(rum::ExprParser::new().parse("+").is_ok());
         assert!(rum::ExprParser::new().parse("'()").is_ok());

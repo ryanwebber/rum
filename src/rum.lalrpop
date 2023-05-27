@@ -20,7 +20,7 @@ pub Expr: ast::Expr<'input> = {
     ID => ast::Expr::Identifier(<>),
     Symbol => ast::Expr::Symbol(<>),
     String => ast::Expr::String(<>),
-    Value => ast::Expr::Value(<>),
+    PseudoValue => ast::Expr::PseudoValue(<>),
     "_" => ast::Expr::Placeholder(ast::MatchSize::One),
     "..." => ast::Expr::Placeholder(ast::MatchSize::ZeroOrMore),
     "'" <Expr> => ast::builtin::quote(<>),
@@ -50,8 +50,8 @@ String: &'input str = {
     <s:StringLiteral> => &s[1..s.len()-1]
 }
 
-Value: &'input str = {
-    <s:ValueLiteral> => &s[1..]
+PseudoValue: &'input str = {
+    <s:PseudoValueLiteral> => &s[1..]
 }
 
 ID: &'input str = {
@@ -82,7 +82,7 @@ match {
 
     r"[0-9]+" => Digits,
     r#""(\\\\|\\"|[^"\\])*""# => StringLiteral,
-    r"#[A-Z][A-Za-z]*" => ValueLiteral,
+    r"#[A-Za-z_]*" => PseudoValueLiteral,
 } else {
     r"[\w|\$](\w|-|:|\.)*\??" => IdentifierLiteral,
     r":\w+" => Symbol,
