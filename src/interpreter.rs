@@ -1,7 +1,7 @@
 use core::hash::Hash;
 use std::collections::HashMap;
 
-use crate::{ast, interner, types};
+use crate::{ast, interner, parser, types};
 
 enum ErrorType {
     InconsistentState,
@@ -9,7 +9,7 @@ enum ErrorType {
     UnknownPseudoValue,
 }
 
-type Error = &'static str;
+pub type Error = &'static str;
 type StringInterner = interner::StringInterner<types::Id>;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -19,22 +19,22 @@ enum Arity {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-struct Symbol(types::Id);
+pub struct Symbol(types::Id);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-struct Identifier(types::Id);
+pub struct Identifier(types::Id);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-struct PseudoValue(types::Id);
+pub struct PseudoValue(types::Id);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct Function {
+pub struct Function {
     arity: Arity,
     body: Box<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum Value {
+pub enum Value {
     Boolean(bool),
     Function(Function),
     Identifier(Identifier),
@@ -55,13 +55,19 @@ impl Value {
     }
 }
 
-struct State {
+struct FunctionClosure {
+    function: Function,
+    environment: Table,
+    upvalues: Vec<Value>,
+}
+
+pub struct State {
     strings: StringInterner,
     globals: Table,
 }
 
 impl State {
-    fn new() -> Self {
+    pub fn new() -> Self {
         State {
             strings: StringInterner::new(),
             globals: Table::new(),
@@ -98,7 +104,7 @@ impl<'a> MetaProtocol for ast::Expr<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Table {
+pub struct Table {
     contents: HashMap<Value, Value>,
     metatable: MetaTable,
 }
@@ -139,8 +145,8 @@ impl Table {
     }
 }
 
-type Call = fn(&Interpreter, &mut State, &[Value]) -> Result<Value, Error>;
-struct Backend {
+pub type Call = fn(&Interpreter, &mut State, &[Value]) -> Result<Value, Error>;
+pub struct Backend {
     builtins: HashMap<&'static str, Call>,
 }
 
@@ -172,7 +178,7 @@ impl Backend {
     }
 }
 
-trait Module {
+pub trait Module {
     fn register_builtins(&self, backend: &mut Backend);
 }
 
@@ -189,22 +195,17 @@ impl Module for CoreModule {
         });
 
         backend.insert("__core$def_fn", |_, state, args| match args {
-            [Value::Identifier(id), _, body] => match state.strings.resolve(id.0) {
-                None => Err("No such interned string"),
-                Some(fname) => {
-                    println!("Function: {}", fname);
-                    let key = Value::String(fname.to_string());
-                    state.globals.insert(
-                        key,
-                        Value::Function(Function {
-                            arity: Arity::Any,
-                            body: Box::new(body.clone()),
-                        }),
-                    );
+            [Value::Identifier(id), Value::List(args), body] => {
+                state.globals.insert(
+                    Value::Identifier(*id),
+                    Value::Function(Function {
+                        arity: Arity::Exactly(args.len()),
+                        body: Box::new(body.clone()),
+                    }),
+                );
 
-                    Ok(Value::empty())
-                }
-            },
+                Ok(Value::empty())
+            }
             _ => Err("Expected three arguments to def_fn"),
         });
     }
@@ -228,12 +229,12 @@ impl Module for ArithmeticModule {
     }
 }
 
-struct Interpreter {
+pub struct Interpreter {
     backend: Backend,
 }
 
 impl Interpreter {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let mut interpreter = Interpreter {
             backend: Backend::new(),
         };
@@ -245,11 +246,11 @@ impl Interpreter {
         interpreter
     }
 
-    fn load_module<T: Module>(&mut self, module: &T) {
+    pub fn load_module<T: Module>(&mut self, module: &T) {
         module.register_builtins(&mut self.backend);
     }
 
-    fn evaluate(&self, state: &mut State, value: &Value) -> Result<Value, Error> {
+    pub fn evaluate(&self, state: &mut State, value: &Value) -> Result<Value, Error> {
         match value {
             Value::Boolean(_)
             | Value::Function(_)
@@ -260,12 +261,9 @@ impl Interpreter {
             | Value::Vector(_)
             | Value::NativeCall
             | Value::Unbound => Ok(value.clone()),
-            Value::Identifier(id) => match state.strings.resolve(id.0) {
-                None => Err("No such interned string"),
-                Some(name) => match state.globals.get(&Value::String(name.to_string())) {
-                    None => Err("No such global"),
-                    Some(value) => Ok(value.clone()),
-                },
+            Value::Identifier(_) => match state.globals.get(value) {
+                None => Err("No such global"),
+                Some(value) => Ok(value.clone()),
             },
             Value::PseudoValue(PseudoValue(val)) => match state.strings.resolve(*val) {
                 None => Err("No such interned string"),
@@ -284,13 +282,36 @@ impl Interpreter {
                     },
                     Value::Function(func) => self.evaluate(state, &func.body), // TODO: Handle parameters
                     Value::Table(_table) => todo!(),
-                    _ => {
-                        println!("Callee: {:?}", callee);
-                        Err("Value is not invokable")
-                    }
+                    _ => Err("Value is not invokable"),
                 }),
             },
         }
+    }
+}
+
+pub struct Runtime {
+    state: State,
+    parser: parser::ExprParser,
+    interpreter: Interpreter,
+}
+
+impl Runtime {
+    pub fn new() -> Self {
+        Runtime {
+            state: State::new(),
+            parser: parser::ExprParser::new(),
+            interpreter: Interpreter::new(),
+        }
+    }
+
+    pub fn evaluate(&mut self, value: &Value) -> Result<Value, Error> {
+        self.interpreter.evaluate(&mut self.state, value)
+    }
+
+    pub fn evaluate_str(&mut self, input: &str) -> Result<Value, Error> {
+        let expr = self.parser.parse(input).unwrap();
+        let value = expr.to_value(&mut self.state.strings);
+        self.evaluate(&value)
     }
 }
 
@@ -299,32 +320,6 @@ mod test {
 
     use super::*;
     use crate::parser;
-
-    struct Runtime {
-        state: State,
-        parser: parser::ExprParser,
-        interpreter: Interpreter,
-    }
-
-    impl Runtime {
-        fn new() -> Self {
-            Runtime {
-                state: State::new(),
-                parser: parser::ExprParser::new(),
-                interpreter: Interpreter::new(),
-            }
-        }
-
-        fn evaluate(&mut self, value: &Value) -> Result<Value, Error> {
-            self.interpreter.evaluate(&mut self.state, value)
-        }
-
-        fn parse_and_evaluate(&mut self, input: &str) -> Result<Value, Error> {
-            let expr = self.parser.parse(input).unwrap();
-            let value = expr.to_value(&mut self.state.strings);
-            self.evaluate(&value)
-        }
-    }
 
     #[test]
     fn test_ast_meta_protocol() {
@@ -343,17 +338,14 @@ mod test {
     #[test]
     fn test_evaluate_primitives() {
         let mut runtime = Runtime::new();
-        assert_eq!(runtime.parse_and_evaluate("1"), Ok(Value::Number(1)));
+        assert_eq!(runtime.evaluate_str("1"), Ok(Value::Number(1)));
+        assert_eq!(runtime.evaluate_str("\"abc\""), Ok(Value::String(String::from("abc"))));
+        assert_eq!(runtime.evaluate_str("#True"), Ok(Value::Boolean(true)));
+        assert_eq!(runtime.evaluate_str("#False"), Ok(Value::Boolean(false)));
+        assert_eq!(runtime.evaluate_str("#Yo"), Err("No such value"));
+        assert_eq!(runtime.evaluate_str("#Call"), Ok(Value::NativeCall));
         assert_eq!(
-            runtime.parse_and_evaluate("\"abc\""),
-            Ok(Value::String(String::from("abc")))
-        );
-        assert_eq!(runtime.parse_and_evaluate("#True"), Ok(Value::Boolean(true)));
-        assert_eq!(runtime.parse_and_evaluate("#False"), Ok(Value::Boolean(false)));
-        assert_eq!(runtime.parse_and_evaluate("#Yo"), Err("No such value"));
-        assert_eq!(runtime.parse_and_evaluate("#Call"), Ok(Value::NativeCall));
-        assert_eq!(
-            runtime.parse_and_evaluate("[1 () [2]]"),
+            runtime.evaluate_str("[1 () [2]]"),
             Ok(Value::Vector(vec![
                 Value::Number(1),
                 Value::empty(),
@@ -376,19 +368,13 @@ mod test {
     #[test]
     fn test_evaluate_quote() {
         let mut runtime = Runtime::new();
-        assert_eq!(
-            runtime.parse_and_evaluate("(#Call :__core$quote 1)"),
-            Ok(Value::Number(1))
-        );
+        assert_eq!(runtime.evaluate_str("(#Call :__core$quote 1)"), Ok(Value::Number(1)));
     }
 
     #[test]
     fn test_evaluate_add() {
         let mut runtime = Runtime::new();
-        assert_eq!(
-            runtime.parse_and_evaluate("(#Call :__math$add 1 2 3)"),
-            Ok(Value::Number(6))
-        );
+        assert_eq!(runtime.evaluate_str("(#Call :__math$add 1 2 3)"), Ok(Value::Number(6)));
     }
 
     #[test]
@@ -396,10 +382,10 @@ mod test {
         let mut runtime = Runtime::new();
 
         assert_eq!(
-            runtime.parse_and_evaluate("(#Call :__core$def_fn add (a b) (#Call :__math$add 2 3))"),
+            runtime.evaluate_str("(#Call :__core$def_fn add (a b) (#Call :__math$add a b))"),
             Ok(Value::empty())
         );
 
-        assert_eq!(runtime.parse_and_evaluate("(add 1 2)"), Ok(Value::Number(5)));
+        assert_eq!(runtime.evaluate_str("(add 1 (add 2 3))"), Ok(Value::Number(5)));
     }
 }
