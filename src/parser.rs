@@ -34,6 +34,7 @@ mod tests {
         assert!(rum::ExprParser::new().parse("(hello1 2 3)").is_ok());
         assert!(rum::ExprParser::new().parse("2147483648").is_err());
         assert!(rum::ExprParser::new().parse(":2").is_ok());
+        assert!(rum::ExprParser::new().parse(":__abc$xyz").is_ok());
         assert!(rum::ExprParser::new().parse(":id").is_ok());
         assert!(rum::ExprParser::new().parse(":").is_err());
         assert!(rum::ExprParser::new().parse("abc-123.xyz").is_ok());

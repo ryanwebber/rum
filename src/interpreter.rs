@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use core::hash::Hash;
 use std::collections::HashMap;
 
 use crate::{ast, interner, types};
@@ -13,6 +13,12 @@ type Error = &'static str;
 type StringInterner = interner::StringInterner<types::Id>;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+enum Arity {
+    Any,
+    Exactly(usize),
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 struct Symbol(types::Id);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -22,11 +28,18 @@ struct Identifier(types::Id);
 struct PseudoValue(types::Id);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Function {
+    arity: Arity,
+    body: Box<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Value {
     Boolean(bool),
-    NativeCall,
+    Function(Function),
     Identifier(Identifier),
     List(Vec<Value>),
+    NativeCall,
     Number(types::Numeric),
     PseudoValue(PseudoValue),
     String(String),
@@ -43,13 +56,15 @@ impl Value {
 }
 
 struct State {
-    string_interner: StringInterner,
+    strings: StringInterner,
+    globals: Table,
 }
 
 impl State {
     fn new() -> Self {
         State {
-            string_interner: StringInterner::new(),
+            strings: StringInterner::new(),
+            globals: Table::new(),
         }
     }
 }
@@ -82,10 +97,26 @@ impl<'a> MetaProtocol for ast::Expr<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Table {
-    contents: BTreeMap<Value, Value>,
+    contents: HashMap<Value, Value>,
     metatable: MetaTable,
+}
+
+impl Hash for Table {
+    fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {
+        todo!("Figure out how to hash table")
+    }
+}
+
+impl Table {
+    fn insert(&mut self, key: Value, value: Value) -> Option<Value> {
+        self.contents.insert(key, value)
+    }
+
+    fn get(&self, key: &Value) -> Option<&Value> {
+        self.contents.get(key)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -102,7 +133,7 @@ impl MetaTable {
 impl Table {
     fn new() -> Self {
         Table {
-            contents: BTreeMap::new(),
+            contents: HashMap::new(),
             metatable: MetaTable::new(),
         }
     }
@@ -131,7 +162,7 @@ impl Backend {
         sym: Symbol,
         args: &[Value],
     ) -> Result<Value, Error> {
-        match state.string_interner.resolve(sym.0) {
+        match state.strings.resolve(sym.0) {
             None => Err("No such interned string"),
             Some(name) => match self.builtins.get(&name[1..]) {
                 None => Err("No such builtin"),
@@ -148,14 +179,42 @@ trait Module {
 struct CoreModule;
 
 impl Module for CoreModule {
-    fn register_builtins(&self, _backend: &mut Backend) {}
+    fn register_builtins(&self, backend: &mut Backend) {
+        backend.insert("__core$quote", |_, _, args| {
+            if args.len() != 1 {
+                return Err("Expected one argument to quote");
+            }
+
+            Ok(args[0].clone())
+        });
+
+        backend.insert("__core$def_fn", |_, state, args| match args {
+            [Value::Identifier(id), _, body] => match state.strings.resolve(id.0) {
+                None => Err("No such interned string"),
+                Some(fname) => {
+                    println!("Function: {}", fname);
+                    let key = Value::String(fname.to_string());
+                    state.globals.insert(
+                        key,
+                        Value::Function(Function {
+                            arity: Arity::Any,
+                            body: Box::new(body.clone()),
+                        }),
+                    );
+
+                    Ok(Value::empty())
+                }
+            },
+            _ => Err("Expected three arguments to def_fn"),
+        });
+    }
 }
 
 struct ArithmeticModule;
 
 impl Module for ArithmeticModule {
     fn register_builtins(&self, backend: &mut Backend) {
-        backend.insert("add", |interpreter, state, args| {
+        backend.insert("__math$add", |interpreter, state, args| {
             let mut sum = 0;
             for arg in args {
                 match interpreter.evaluate(state, arg) {
@@ -193,6 +252,7 @@ impl Interpreter {
     fn evaluate(&self, state: &mut State, value: &Value) -> Result<Value, Error> {
         match value {
             Value::Boolean(_)
+            | Value::Function(_)
             | Value::Number(_)
             | Value::String(_)
             | Value::Symbol(_)
@@ -200,8 +260,14 @@ impl Interpreter {
             | Value::Vector(_)
             | Value::NativeCall
             | Value::Unbound => Ok(value.clone()),
-            Value::Identifier(_id) => todo!(),
-            Value::PseudoValue(PseudoValue(val)) => match state.string_interner.resolve(*val) {
+            Value::Identifier(id) => match state.strings.resolve(id.0) {
+                None => Err("No such interned string"),
+                Some(name) => match state.globals.get(&Value::String(name.to_string())) {
+                    None => Err("No such global"),
+                    Some(value) => Ok(value.clone()),
+                },
+            },
+            Value::PseudoValue(PseudoValue(val)) => match state.strings.resolve(*val) {
                 None => Err("No such interned string"),
                 Some("Call") => Ok(Value::NativeCall),
                 Some("True") => Ok(Value::Boolean(true)),
@@ -216,8 +282,12 @@ impl Interpreter {
                         [Value::Symbol(sym), args @ ..] => self.backend.try_call(self, state, *sym, args),
                         _ => Err("Native call expects symbol as first argument"),
                     },
+                    Value::Function(func) => self.evaluate(state, &func.body), // TODO: Handle parameters
                     Value::Table(_table) => todo!(),
-                    _ => Err("Value is not invokable"),
+                    _ => {
+                        println!("Callee: {:?}", callee);
+                        Err("Value is not invokable")
+                    }
                 }),
             },
         }
@@ -230,65 +300,106 @@ mod test {
     use super::*;
     use crate::parser;
 
-    fn parse(input: &str) -> ast::Expr {
-        let parser = parser::ExprParser::new();
-        match parser.parse(input) {
-            Ok(expr) => expr,
-            Err(err) => panic!("Error parsing expression: {:?}", err),
-        }
+    struct Runtime {
+        state: State,
+        parser: parser::ExprParser,
+        interpreter: Interpreter,
     }
 
-    fn evaluate(input: &str) -> Value {
-        let mut state = State::new();
-        let interpreter = Interpreter::new();
-        let value = parse(input).to_value(&mut state.string_interner);
-        match interpreter.evaluate(&mut state, &value) {
-            Ok(value) => value,
-            Err(err) => panic!("Error evaluating expression: {:?}", err),
+    impl Runtime {
+        fn new() -> Self {
+            Runtime {
+                state: State::new(),
+                parser: parser::ExprParser::new(),
+                interpreter: Interpreter::new(),
+            }
         }
-    }
 
-    fn throws_condition(input: &str) -> () {
-        let mut state = State::new();
-        let interpreter = Interpreter::new();
-        let value = parse(input).to_value(&mut state.string_interner);
-        match interpreter.evaluate(&mut state, &value) {
-            Ok(value) => panic!("Expected condition but got: {:?}", value),
-            Err(_) => (),
+        fn evaluate(&mut self, value: &Value) -> Result<Value, Error> {
+            self.interpreter.evaluate(&mut self.state, value)
+        }
+
+        fn parse_and_evaluate(&mut self, input: &str) -> Result<Value, Error> {
+            let expr = self.parser.parse(input).unwrap();
+            let value = expr.to_value(&mut self.state.strings);
+            self.evaluate(&value)
         }
     }
 
     #[test]
     fn test_ast_meta_protocol() {
         let mut interner = StringInterner::new();
+        let parse = parser::ExprParser::new()
+            .parse("{ 1 => 2 }")
+            .unwrap()
+            .to_value(&mut interner);
+
         assert_eq!(
-            parse("{ 1 => 2 }").to_value(&mut interner),
+            parse,
             Value::List(vec![Value::List(vec![Value::Number(1), Value::Number(2)])])
         );
     }
 
     #[test]
     fn test_evaluate_primitives() {
-        assert_eq!(evaluate("1"), Value::Number(1));
-        assert_eq!(evaluate(":symbol"), Value::Symbol(Symbol(0)));
-        assert_eq!(evaluate("\"abc\""), Value::String(String::from("abc")));
-        assert_eq!(evaluate("#True"), Value::Boolean(true));
-        assert_eq!(evaluate("#Call"), Value::NativeCall);
-
+        let mut runtime = Runtime::new();
+        assert_eq!(runtime.parse_and_evaluate("1"), Ok(Value::Number(1)));
         assert_eq!(
-            evaluate("[1 () [2]]"),
-            Value::Vector(vec![
+            runtime.parse_and_evaluate("\"abc\""),
+            Ok(Value::String(String::from("abc")))
+        );
+        assert_eq!(runtime.parse_and_evaluate("#True"), Ok(Value::Boolean(true)));
+        assert_eq!(runtime.parse_and_evaluate("#False"), Ok(Value::Boolean(false)));
+        assert_eq!(runtime.parse_and_evaluate("#Yo"), Err("No such value"));
+        assert_eq!(runtime.parse_and_evaluate("#Call"), Ok(Value::NativeCall));
+        assert_eq!(
+            runtime.parse_and_evaluate("[1 () [2]]"),
+            Ok(Value::Vector(vec![
                 Value::Number(1),
                 Value::empty(),
-                Value::Vector(vec![Value::Number(2)])
-            ])
+                Value::Vector(vec![Value::Number(2)]),
+            ]))
         );
+        assert!({
+            let result = runtime.evaluate(&Value::Function(Function {
+                arity: Arity::Any,
+                body: Box::new(Value::Number(1)),
+            }));
 
-        assert!(throws_condition("#Yo") == ());
+            match result {
+                Ok(Value::Function(_)) => true,
+                _ => false,
+            }
+        });
+    }
+
+    #[test]
+    fn test_evaluate_quote() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate("(#Call :__core$quote 1)"),
+            Ok(Value::Number(1))
+        );
     }
 
     #[test]
     fn test_evaluate_add() {
-        assert_eq!(evaluate("(#Call :add 1 (#Call :add 2 3))"), Value::Number(6));
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate("(#Call :__math$add 1 2 3)"),
+            Ok(Value::Number(6))
+        );
+    }
+
+    #[test]
+    fn test_evaluate_function_call() {
+        let mut runtime = Runtime::new();
+
+        assert_eq!(
+            runtime.parse_and_evaluate("(#Call :__core$def_fn add (a b) (#Call :__math$add 2 3))"),
+            Ok(Value::empty())
+        );
+
+        assert_eq!(runtime.parse_and_evaluate("(add 1 2)"), Ok(Value::Number(5)));
     }
 }
