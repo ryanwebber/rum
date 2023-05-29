@@ -1,16 +1,109 @@
 use core::hash::Hash;
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    fmt::{Display, Formatter},
+};
 
 use crate::{ast, interner, parser, types};
 
-enum ErrorType {
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum ErrorType {
     InconsistentState,
-    ValueNotCallable,
+    InvalidNativeCall,
+    InvalidParse,
+    UnboundIdentifier,
+    UnknownNativeCall,
     UnknownPseudoValue,
+    ValueNotCallable,
 }
 
-pub type Error = &'static str;
 type StringInterner = interner::StringInterner<types::Id>;
+
+#[derive(Debug)]
+pub struct Error {
+    error_type: ErrorType,
+    message: String,
+}
+
+impl Error {
+    fn invalid_native_call(call: &str) -> Error {
+        Error {
+            error_type: ErrorType::InvalidNativeCall,
+            message: format!("Invalid native call: {}", call),
+        }
+    }
+
+    fn invalid_parse<T>(error: &T) -> Error
+    where
+        T: std::error::Error,
+    {
+        Error {
+            error_type: ErrorType::InvalidParse,
+            message: format!("Invalid parse: {:?}", error),
+        }
+    }
+
+    fn no_such_string() -> Error {
+        Error {
+            error_type: ErrorType::InconsistentState,
+            message: String::from("No such interned string"),
+        }
+    }
+
+    fn unbound_identifier(id: &str) -> Error {
+        Error {
+            error_type: ErrorType::UnboundIdentifier,
+            message: format!("Unbound identifier: {}", id),
+        }
+    }
+
+    fn unknown_native_call(name: &str) -> Error {
+        Error {
+            error_type: ErrorType::UnknownNativeCall,
+            message: format!("Unknown native call: {}", name),
+        }
+    }
+
+    fn unknown_pseudo_value(name: &str) -> Error {
+        Error {
+            error_type: ErrorType::UnknownPseudoValue,
+            message: format!("Unknown pseudo value: {}", name),
+        }
+    }
+
+    fn value_not_callable(value: &Value) -> Error {
+        Error {
+            error_type: ErrorType::ValueNotCallable,
+            message: format!("Value is not callable: {:?}", value),
+        }
+    }
+}
+
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        self.error_type == other.error_type && self.message == other.message
+    }
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[{}]",
+            match self.error_type {
+                ErrorType::InconsistentState => "InconsistentState",
+                ErrorType::InvalidNativeCall => "InvalidNativeCall",
+                ErrorType::InvalidParse => "InvalidParse",
+                ErrorType::UnboundIdentifier => "UnboundIdentifier",
+                ErrorType::UnknownNativeCall => "UnknownNativeCall",
+                ErrorType::UnknownPseudoValue => "UnknownPseudoValue",
+                ErrorType::ValueNotCallable => "ValueNotCallable",
+            }
+        )?;
+
+        write!(f, " {}", self.message)
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum Arity {
@@ -157,7 +250,7 @@ impl Backend {
         }
     }
 
-    fn insert(&mut self, name: &'static str, call: Call) {
+    pub fn insert(&mut self, name: &'static str, call: Call) {
         self.builtins.insert(name, call);
     }
 
@@ -169,17 +262,24 @@ impl Backend {
         args: &[Value],
     ) -> Result<Value, Error> {
         match state.strings.resolve(sym.0) {
-            None => Err("No such interned string"),
+            None => Err(Error::no_such_string()),
             Some(name) => match self.builtins.get(&name[1..]) {
-                None => Err("No such builtin"),
+                None => Err(Error::unknown_native_call(name)),
                 Some(call) => call(interpreter, state, args),
             },
         }
     }
 }
 
-pub trait Module {
+pub trait Module
+where
+    Self: Sized,
+{
     fn register_builtins(&self, backend: &mut Backend);
+
+    fn prelude() -> &'static str {
+        ""
+    }
 }
 
 struct CoreModule;
@@ -188,7 +288,7 @@ impl Module for CoreModule {
     fn register_builtins(&self, backend: &mut Backend) {
         backend.insert("__core$quote", |_, _, args| {
             if args.len() != 1 {
-                return Err("Expected one argument to quote");
+                return Err(Error::invalid_native_call("quote"));
             }
 
             Ok(args[0].clone())
@@ -206,7 +306,7 @@ impl Module for CoreModule {
 
                 Ok(Value::empty())
             }
-            _ => Err("Expected three arguments to def_fn"),
+            _ => Err(Error::invalid_native_call("def-fn")),
         });
     }
 }
@@ -220,12 +320,16 @@ impl Module for ArithmeticModule {
             for arg in args {
                 match interpreter.evaluate(state, arg) {
                     Ok(Value::Number(n)) => sum += n,
-                    Ok(_) => return Err("Expected number"),
+                    Ok(_) => return Err(Error::invalid_native_call("+")),
                     Err(err) => return Err(err),
                 }
             }
             Ok(Value::Number(sum))
         });
+    }
+
+    fn prelude() -> &'static str {
+        include_str!("pkg/math.rum")
     }
 }
 
@@ -235,19 +339,9 @@ pub struct Interpreter {
 
 impl Interpreter {
     pub fn new() -> Self {
-        let mut interpreter = Interpreter {
+        Interpreter {
             backend: Backend::new(),
-        };
-
-        // Load the default modules we literally can't run without
-        interpreter.load_module(&CoreModule);
-        interpreter.load_module(&ArithmeticModule);
-
-        interpreter
-    }
-
-    pub fn load_module<T: Module>(&mut self, module: &T) {
-        module.register_builtins(&mut self.backend);
+        }
     }
 
     pub fn evaluate(&self, state: &mut State, value: &Value) -> Result<Value, Error> {
@@ -261,57 +355,98 @@ impl Interpreter {
             | Value::Vector(_)
             | Value::NativeCall
             | Value::Unbound => Ok(value.clone()),
-            Value::Identifier(_) => match state.globals.get(value) {
-                None => Err("No such global"),
+            Value::Identifier(id) => match state.globals.get(value) {
+                None => Err(Error::unbound_identifier(state.strings.resolve(id.0).unwrap_or("<?>"))),
                 Some(value) => Ok(value.clone()),
             },
             Value::PseudoValue(PseudoValue(val)) => match state.strings.resolve(*val) {
-                None => Err("No such interned string"),
+                None => Err(Error::no_such_string()),
                 Some("Call") => Ok(Value::NativeCall),
+                Some("Nil") => Ok(Value::Unbound),
                 Some("True") => Ok(Value::Boolean(true)),
                 Some("False") => Ok(Value::Boolean(false)),
-                Some(_) => Err("No such value"),
+                Some(name) => Err(Error::unknown_pseudo_value(name)),
             },
             Value::List(items) => match items.split_first() {
                 None => Ok(Value::empty()),
                 Some((first, args)) => self.evaluate(state, first).and_then(|callee| match callee {
                     Value::NativeCall => match args {
-                        [] => Err("No arguments to native call"),
+                        [] => Err(Error::invalid_native_call("<no name>")),
                         [Value::Symbol(sym), args @ ..] => self.backend.try_call(self, state, *sym, args),
-                        _ => Err("Native call expects symbol as first argument"),
+                        _ => Err(Error::invalid_native_call("<bad name>")),
                     },
                     Value::Function(func) => self.evaluate(state, &func.body), // TODO: Handle parameters
                     Value::Table(_table) => todo!(),
-                    _ => Err("Value is not invokable"),
+                    _ => Err(Error::value_not_callable(&callee)),
                 }),
             },
         }
     }
 }
 
+struct Parsers {
+    expr: parser::ExprParser,
+    exprs: parser::ExprsParser,
+}
+
 pub struct Runtime {
     state: State,
-    parser: parser::ExprParser,
     interpreter: Interpreter,
+    parsers: Parsers,
 }
 
 impl Runtime {
     pub fn new() -> Self {
-        Runtime {
+        let mut runtime = Runtime {
             state: State::new(),
-            parser: parser::ExprParser::new(),
             interpreter: Interpreter::new(),
-        }
+            parsers: Parsers {
+                expr: parser::ExprParser::new(),
+                exprs: parser::ExprsParser::new(),
+            },
+        };
+
+        runtime.load_module(&CoreModule).unwrap();
+        runtime.load_module(&ArithmeticModule).unwrap();
+
+        runtime
+    }
+
+    pub fn load_module<T: Module>(&mut self, module: &T) -> Result<(), Error> {
+        module.register_builtins(&mut self.interpreter.backend);
+        self.evaluate_exprs(T::prelude()).map(|_| ())
     }
 
     pub fn evaluate(&mut self, value: &Value) -> Result<Value, Error> {
         self.interpreter.evaluate(&mut self.state, value)
     }
 
-    pub fn evaluate_str(&mut self, input: &str) -> Result<Value, Error> {
-        let expr = self.parser.parse(input).unwrap();
-        let value = expr.to_value(&mut self.state.strings);
-        self.evaluate(&value)
+    pub fn evaluate_expr(&mut self, input: &str) -> Result<Value, Error> {
+        self.parsers
+            .expr
+            .parse(input)
+            .map_err(|err| Error::invalid_parse(&err))
+            .and_then(|expr| {
+                let value = expr.to_value(&mut self.state.strings);
+                self.evaluate(&value)
+            })
+    }
+
+    pub fn evaluate_exprs(&mut self, input: &str) -> Result<(), Error> {
+        self.parsers
+            .exprs
+            .parse(input)
+            .map_err(|err| Error::invalid_parse(&err))
+            .and_then(|exprs| {
+                exprs
+                    .into_iter()
+                    .map(|expr| {
+                        let value = expr.to_value(&mut self.state.strings);
+                        self.evaluate(&value)
+                    })
+                    .collect::<Result<Vec<Value>, Error>>()
+                    .map(|_| ())
+            })
     }
 }
 
@@ -338,14 +473,14 @@ mod test {
     #[test]
     fn test_evaluate_primitives() {
         let mut runtime = Runtime::new();
-        assert_eq!(runtime.evaluate_str("1"), Ok(Value::Number(1)));
-        assert_eq!(runtime.evaluate_str("\"abc\""), Ok(Value::String(String::from("abc"))));
-        assert_eq!(runtime.evaluate_str("#True"), Ok(Value::Boolean(true)));
-        assert_eq!(runtime.evaluate_str("#False"), Ok(Value::Boolean(false)));
-        assert_eq!(runtime.evaluate_str("#Yo"), Err("No such value"));
-        assert_eq!(runtime.evaluate_str("#Call"), Ok(Value::NativeCall));
+        assert_eq!(runtime.evaluate_expr("1"), Ok(Value::Number(1)));
+        assert_eq!(runtime.evaluate_expr("\"abc\""), Ok(Value::String(String::from("abc"))));
+        assert_eq!(runtime.evaluate_expr("#True"), Ok(Value::Boolean(true)));
+        assert_eq!(runtime.evaluate_expr("#False"), Ok(Value::Boolean(false)));
+        assert_eq!(runtime.evaluate_expr("#Yo"), Err(Error::unknown_pseudo_value("Yo")));
+        assert_eq!(runtime.evaluate_expr("#Call"), Ok(Value::NativeCall));
         assert_eq!(
-            runtime.evaluate_str("[1 () [2]]"),
+            runtime.evaluate_expr("[1 () [2]]"),
             Ok(Value::Vector(vec![
                 Value::Number(1),
                 Value::empty(),
@@ -368,13 +503,13 @@ mod test {
     #[test]
     fn test_evaluate_quote() {
         let mut runtime = Runtime::new();
-        assert_eq!(runtime.evaluate_str("(#Call :__core$quote 1)"), Ok(Value::Number(1)));
+        assert_eq!(runtime.evaluate_expr("(#Call :__core$quote 1)"), Ok(Value::Number(1)));
     }
 
     #[test]
     fn test_evaluate_add() {
         let mut runtime = Runtime::new();
-        assert_eq!(runtime.evaluate_str("(#Call :__math$add 1 2 3)"), Ok(Value::Number(6)));
+        assert_eq!(runtime.evaluate_expr("(#Call :__math$add 1 2 3)"), Ok(Value::Number(6)));
     }
 
     #[test]
@@ -382,10 +517,10 @@ mod test {
         let mut runtime = Runtime::new();
 
         assert_eq!(
-            runtime.evaluate_str("(#Call :__core$def_fn add (a b) (#Call :__math$add a b))"),
+            runtime.evaluate_expr("(#Call :__core$def_fn add (a b) (#Call :__math$add a b))"),
             Ok(Value::empty())
         );
 
-        assert_eq!(runtime.evaluate_str("(add 1 (add 2 3))"), Ok(Value::Number(5)));
+        assert_eq!(runtime.evaluate_expr("(add 1 (add 2 3))"), Ok(Value::Number(5)));
     }
 }

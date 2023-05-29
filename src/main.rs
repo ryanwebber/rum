@@ -8,13 +8,30 @@ mod types;
 
 extern crate lalrpop_util;
 
+struct ReplModule;
+
+impl interpreter::Module for ReplModule {
+    fn register_builtins(&self, backend: &mut interpreter::Backend) {
+        backend.insert("repl$exit", |_, _, _| {
+            std::process::exit(0);
+        })
+    }
+
+    fn prelude() -> &'static str {
+        r#"
+        (#Call :__core$def_fn exit () (#Call :repl$exit))
+        "#
+    }
+}
+
 fn main() {
     let mut runtime = interpreter::Runtime::new();
+    runtime.load_module(&ReplModule).unwrap();
 
     {
         println!(";");
-        println!("; Rum v0.1.0");
-        println!("; Functions:");
+        println!("; Rum v0.1.0 REPL");
+        println!("; Available functions:");
         println!(";   (exit)    Exit the REPL");
         println!(";   (help)    Print additional help information");
         println!(";");
@@ -25,13 +42,7 @@ fn main() {
             print!("> ");
             _ = io::stdout().flush();
             stdin.lock().read_line(&mut line).unwrap();
-
-            // TODO: Add a module for the REPL
-            if line == "(exit)\n" {
-                break;
-            }
-
-            println!("{:?}", runtime.evaluate_str(line.trim_end()));
+            println!("{:?}", runtime.evaluate_expr(line.trim_end()));
             line.clear();
         }
     }

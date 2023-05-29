@@ -1,3 +1,7 @@
+use core::fmt;
+use std::fmt::Display;
+use std::fmt::Formatter;
+
 use crate::ast;
 use crate::types;
 use lalrpop_util::lalrpop_mod;
@@ -10,6 +14,15 @@ pub use rum::ExprsParser;
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum SemanticError {
     NumberLiteralOverflow,
+}
+
+impl Display for SemanticError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        use self::SemanticError::*;
+        match *self {
+            NumberLiteralOverflow => write!(f, "Number literal overflow"),
+        }
+    }
 }
 
 #[cfg(test)]
