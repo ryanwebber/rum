@@ -2,4 +2,5 @@
 ; Arithmetic Module Prelude
 ;
 
-(#Call :__core$def_fn + (a b) (#Call :__math$add 1 2))
+; addition
+(def-fn! + (a b) (#Call :__math$add a b))

@@ -84,7 +84,7 @@ match {
     r#""(\\\\|\\"|[^"\\])*""# => StringLiteral,
     r"#[A-Za-z_]*" => PseudoValueLiteral,
 } else {
-    r"[\w|\$](\w|-|:|\.)*\??" => IdentifierLiteral,
+    r"[\w|\$](\w|-|:|\.)*\??!?" => IdentifierLiteral,
     r":[\w_\$]+" => Symbol,
 } else {
     // Ignore whitespace and comments

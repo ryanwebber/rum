@@ -1,6 +1,7 @@
 use core::hash::Hash;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone)]
 pub struct StringInterner<Symbol>
 where
     Symbol: Eq + Hash + Clone + Ord + From<usize>,

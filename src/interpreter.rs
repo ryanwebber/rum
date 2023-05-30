@@ -2,9 +2,10 @@ use core::hash::Hash;
 use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
+    rc::Rc,
 };
 
-use crate::{ast, interner, parser, types};
+use crate::{ast, gc::Gc, interner, parser, types};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ErrorType {
@@ -26,10 +27,10 @@ pub struct Error {
 }
 
 impl Error {
-    fn invalid_native_call(call: &str) -> Error {
+    fn invalid_native_call(call: &str, msg: &str) -> Error {
         Error {
             error_type: ErrorType::InvalidNativeCall,
-            message: format!("Invalid native call: {}", call),
+            message: format!("Invalid native call: {} ({})", call, msg),
         }
     }
 
@@ -74,7 +75,7 @@ impl Error {
     fn value_not_callable(value: &Value) -> Error {
         Error {
             error_type: ErrorType::ValueNotCallable,
-            message: format!("Value is not callable: {:?}", value),
+            message: format!("Value is not callable: {}", value),
         }
     }
 }
@@ -106,12 +107,6 @@ impl Display for Error {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-enum Arity {
-    Any,
-    Exactly(usize),
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Symbol(types::Id);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -122,8 +117,9 @@ pub struct PseudoValue(types::Id);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Function {
-    arity: Arity,
     body: Box<Value>,
+    parameters: Vec<Identifier>,
+    is_macro: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -137,7 +133,7 @@ pub enum Value {
     PseudoValue(PseudoValue),
     String(String),
     Symbol(Symbol),
-    Table(Table),
+    Table(Gc<Table>),
     Unbound,
     Vector(Vec<Value>),
 }
@@ -148,23 +144,140 @@ impl Value {
     }
 }
 
-struct FunctionClosure {
-    function: Function,
-    environment: Table,
-    upvalues: Vec<Value>,
+impl Display for Value {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Boolean(b) => write!(f, "#{}", if *b { "True" } else { "False" }),
+            Value::Function(_) => write!(f, "<function>"),
+            Value::Identifier(id) => write!(f, "Identifier({})", id.0),
+            Value::List(items) => {
+                write!(f, "'(")?;
+                for item in items {
+                    write!(f, "{} ", item)?;
+                }
+                write!(f, ")")
+            }
+            Value::NativeCall => write!(f, "<native-call>"),
+            Value::Number(n) => write!(f, "{}", n),
+            Value::PseudoValue(val) => write!(f, "#{}", val.0),
+            Value::String(s) => write!(f, "\"{}\"", s),
+            Value::Symbol(sym) => write!(f, ":{}", sym.0),
+            Value::Table(table) => {
+                write!(f, "{{")?;
+                for (key, value) in &table.borrow().contents {
+                    write!(f, "{}: {}, ", key, value)?;
+                }
+                write!(f, "}}")
+            }
+            Value::Unbound => write!(f, "#Nil"),
+            Value::Vector(items) => {
+                write!(f, "[")?;
+                for item in items {
+                    write!(f, "{} ", item)?;
+                }
+                write!(f, "]")
+            }
+        }
+    }
+}
+
+struct SharedIdentifiers {
+    globals: Identifier,
+    parent_scope: Identifier,
 }
 
 pub struct State {
     strings: StringInterner,
-    globals: Table,
+    identifiers: Rc<SharedIdentifiers>,
+    environment: Gc<Table>,
 }
 
 impl State {
     pub fn new() -> Self {
+        let mut strings = StringInterner::new();
+        let identifiers = Rc::new(SharedIdentifiers {
+            globals: Identifier(strings.get_or_intern("__globals")),
+            parent_scope: Identifier(strings.get_or_intern("__parent_scope")),
+        });
+
+        let environment = Gc::new(Table::new());
+
         State {
-            strings: StringInterner::new(),
-            globals: Table::new(),
+            strings,
+            identifiers,
+            environment,
         }
+    }
+
+    pub fn resolve(&self, identifier: &Identifier) -> Option<Value> {
+        self.environment
+            .borrow()
+            .get(&Value::Identifier(*identifier))
+            .map(|v| v.clone())
+            .or_else(|| {
+                if let Some(parent) = self
+                    .environment
+                    .borrow()
+                    .get(&Value::Identifier(self.identifiers.parent_scope))
+                {
+                    match parent {
+                        Value::Table(table) => {
+                            let parent_state = State {
+                                strings: self.strings.clone(),
+                                identifiers: self.identifiers.clone(),
+                                environment: table.clone(),
+                            };
+
+                            return parent_state.resolve(identifier);
+                        }
+                        _ => {}
+                    }
+                }
+
+                None
+            })
+    }
+
+    pub fn try_resolve(&self, identifier: &Identifier) -> Result<Value, Error> {
+        match self.resolve(identifier) {
+            None => Err(Error::unbound_identifier(
+                self.strings.resolve(identifier.0).unwrap_or("<?>"),
+            )),
+            Some(value) => Ok(value),
+        }
+    }
+
+    fn globals(&self) -> Gc<Table> {
+        match self
+            .environment
+            .borrow()
+            .get(&Value::Identifier(self.identifiers.globals))
+        {
+            None => self.environment.clone(),
+            Some(Value::Table(table)) => table.clone(),
+            _ => unreachable!(),
+        }
+    }
+
+    fn closing(&self, function: &Function, parameters: Vec<Value>) -> State {
+        let mut state = State::new();
+        state.strings = self.strings.clone();
+
+        state.environment.borrow_mut().contents.insert(
+            Value::Identifier(self.identifiers.parent_scope),
+            Value::Table(self.environment.clone()),
+        );
+
+        state.environment.borrow_mut().contents.insert(
+            Value::Identifier(self.identifiers.globals),
+            Value::Table(self.globals()),
+        );
+
+        for (value, name) in parameters.into_iter().zip(function.parameters.iter()) {
+            state.environment.borrow_mut().insert(Value::Identifier(*name), value);
+        }
+
+        state
     }
 }
 
@@ -202,12 +315,6 @@ pub struct Table {
     metatable: MetaTable,
 }
 
-impl Hash for Table {
-    fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {
-        todo!("Figure out how to hash table")
-    }
-}
-
 impl Table {
     fn insert(&mut self, key: Value, value: Value) -> Option<Value> {
         self.contents.insert(key, value)
@@ -220,7 +327,7 @@ impl Table {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct MetaTable {
-    table: Option<Box<Table>>,
+    table: Option<Gc<Table>>,
 }
 
 impl MetaTable {
@@ -288,26 +395,57 @@ impl Module for CoreModule {
     fn register_builtins(&self, backend: &mut Backend) {
         backend.insert("__core$quote", |_, _, args| {
             if args.len() != 1 {
-                return Err(Error::invalid_native_call("quote"));
+                return Err(Error::invalid_native_call("quote", "Expected exactly one argument"));
             }
 
             Ok(args[0].clone())
         });
 
-        backend.insert("__core$def_fn", |_, state, args| match args {
-            [Value::Identifier(id), Value::List(args), body] => {
-                state.globals.insert(
-                    Value::Identifier(*id),
-                    Value::Function(Function {
-                        arity: Arity::Exactly(args.len()),
-                        body: Box::new(body.clone()),
-                    }),
-                );
+        backend.insert("__core$def_fn", |interpreter, state, args| {
+            let evaluated_args = args
+                .iter()
+                .map(|arg| interpreter.evaluate(state, arg))
+                .collect::<Result<Vec<Value>, Error>>()?;
 
-                Ok(Value::empty())
+            match &evaluated_args[..] {
+                [Value::Identifier(id), Value::List(args), body] => {
+                    let parameters = args
+                        .iter()
+                        .map(|arg| match arg {
+                            Value::Identifier(id) => Ok(*id),
+                            _ => Err(Error::invalid_native_call(
+                                "def-fn",
+                                &format!("Expected identifier, but got: {}", arg),
+                            )),
+                        })
+                        .collect::<Result<Vec<Identifier>, Error>>()?;
+
+                    let fname = state.strings.resolve(id.0).unwrap();
+
+                    state.globals().borrow_mut().insert(
+                        Value::Identifier(*id),
+                        Value::Function(Function {
+                            body: Box::new(body.clone()),
+                            parameters,
+                            is_macro: fname.ends_with('!'),
+                        }),
+                    );
+
+                    Ok(Value::empty())
+                }
+                _ => Err(Error::invalid_native_call(
+                    "def-fn",
+                    &format!(
+                        "Expected identifier, argument list, and body, but got: {}",
+                        Value::List(args.to_vec())
+                    ),
+                )),
             }
-            _ => Err(Error::invalid_native_call("def-fn")),
         });
+    }
+
+    fn prelude() -> &'static str {
+        include_str!("pkg/core.rum")
     }
 }
 
@@ -320,7 +458,12 @@ impl Module for ArithmeticModule {
             for arg in args {
                 match interpreter.evaluate(state, arg) {
                     Ok(Value::Number(n)) => sum += n,
-                    Ok(_) => return Err(Error::invalid_native_call("+")),
+                    Ok(_) => {
+                        return Err(Error::invalid_native_call(
+                            "+",
+                            &format!("Expected number (got {})", arg),
+                        ))
+                    }
                     Err(err) => return Err(err),
                 }
             }
@@ -355,10 +498,7 @@ impl Interpreter {
             | Value::Vector(_)
             | Value::NativeCall
             | Value::Unbound => Ok(value.clone()),
-            Value::Identifier(id) => match state.globals.get(value) {
-                None => Err(Error::unbound_identifier(state.strings.resolve(id.0).unwrap_or("<?>"))),
-                Some(value) => Ok(value.clone()),
-            },
+            Value::Identifier(id) => state.try_resolve(id).map(|v| v.clone()),
             Value::PseudoValue(PseudoValue(val)) => match state.strings.resolve(*val) {
                 None => Err(Error::no_such_string()),
                 Some("Call") => Ok(Value::NativeCall),
@@ -371,11 +511,25 @@ impl Interpreter {
                 None => Ok(Value::empty()),
                 Some((first, args)) => self.evaluate(state, first).and_then(|callee| match callee {
                     Value::NativeCall => match args {
-                        [] => Err(Error::invalid_native_call("<no name>")),
+                        [] => Err(Error::invalid_native_call(
+                            "<no name>",
+                            "Expected at least one argument",
+                        )),
                         [Value::Symbol(sym), args @ ..] => self.backend.try_call(self, state, *sym, args),
-                        _ => Err(Error::invalid_native_call("<bad name>")),
+                        _ => Err(Error::invalid_native_call("<bad name>", "Expected symbol")),
                     },
-                    Value::Function(func) => self.evaluate(state, &func.body), // TODO: Handle parameters
+                    Value::Function(func) => {
+                        let evaluated_args = match func.is_macro {
+                            true => args.to_vec(),
+                            false => args
+                                .iter()
+                                .map(|arg| self.evaluate(state, arg))
+                                .collect::<Result<Vec<Value>, Error>>()?,
+                        };
+
+                        let mut scope_state = state.closing(&func, evaluated_args);
+                        self.evaluate(&mut scope_state, &func.body)
+                    }
                     Value::Table(_table) => todo!(),
                     _ => Err(Error::value_not_callable(&callee)),
                 }),
@@ -489,8 +643,9 @@ mod test {
         );
         assert!({
             let result = runtime.evaluate(&Value::Function(Function {
-                arity: Arity::Any,
                 body: Box::new(Value::Number(1)),
+                parameters: vec![],
+                is_macro: false,
             }));
 
             match result {
@@ -515,12 +670,7 @@ mod test {
     #[test]
     fn test_evaluate_function_call() {
         let mut runtime = Runtime::new();
-
-        assert_eq!(
-            runtime.evaluate_expr("(#Call :__core$def_fn add (a b) (#Call :__math$add a b))"),
-            Ok(Value::empty())
-        );
-
-        assert_eq!(runtime.evaluate_expr("(add 1 (add 2 3))"), Ok(Value::Number(5)));
+        assert_eq!(runtime.evaluate_expr("(def-fn! dbl (a) (+ a a))"), Ok(Value::empty()));
+        assert_eq!(runtime.evaluate_expr("(dbl 5)"), Ok(Value::Number(10)));
     }
 }

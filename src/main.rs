@@ -1,6 +1,7 @@
 use std::io::{self, BufRead, Write};
 
 mod ast;
+mod gc;
 mod interner;
 mod interpreter;
 mod parser;
@@ -19,7 +20,7 @@ impl interpreter::Module for ReplModule {
 
     fn prelude() -> &'static str {
         r#"
-        (#Call :__core$def_fn exit () (#Call :repl$exit))
+        (def-fn! exit () (#Call :repl$exit))
         "#
     }
 }
@@ -42,7 +43,11 @@ fn main() {
             print!("> ");
             _ = io::stdout().flush();
             stdin.lock().read_line(&mut line).unwrap();
-            println!("{:?}", runtime.evaluate_expr(line.trim_end()));
+            match runtime.evaluate_expr(line.trim_end()) {
+                Ok(value) => println!("{}", value),
+                Err(e) => println!("! {}", e),
+            }
+
             line.clear();
         }
     }

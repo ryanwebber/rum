@@ -1,0 +1,12 @@
+;
+; Core Module Prelude
+;
+
+; def-fn
+(#Call :__core$def_fn
+    (#Call :__core$quote def-fn!)
+    (#Call :__core$quote (name args body))
+    (#Call :__core$quote (#Call :__core$def_fn name args body)))
+
+; quote
+(def-fn! quote! (a) a)

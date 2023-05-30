@@ -24,6 +24,6 @@ pub mod builtin {
     use super::*;
 
     pub fn quote<'input>(expr: Expr<'input>) -> Expr<'input> {
-        Expr::List(vec![Expr::Identifier("quote"), expr])
+        Expr::List(vec![Expr::Identifier("quote!"), expr])
     }
 }
