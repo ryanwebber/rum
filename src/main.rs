@@ -1,5 +1,7 @@
 use std::io::{self, BufRead, Write};
 
+use crate::interpreter::PrintableValue;
+
 mod ast;
 mod gc;
 mod interner;
@@ -44,7 +46,7 @@ fn main() {
             _ = io::stdout().flush();
             stdin.lock().read_line(&mut line).unwrap();
             match runtime.evaluate_expr(line.trim_end()) {
-                Ok(value) => println!("{}", value),
+                Ok(value) => println!("{}", runtime.print_value(&value)),
                 Err(e) => println!("! {}", e),
             }
 

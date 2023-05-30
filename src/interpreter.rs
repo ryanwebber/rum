@@ -1,4 +1,4 @@
-use core::hash::Hash;
+use core::{fmt, hash::Hash};
 use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
@@ -72,7 +72,7 @@ impl Error {
         }
     }
 
-    fn value_not_callable(value: &Value) -> Error {
+    fn value_not_callable(value: PrintableValue<'_>) -> Error {
         Error {
             error_type: ErrorType::ValueNotCallable,
             message: format!("Value is not callable: {}", value),
@@ -141,43 +141,6 @@ pub enum Value {
 impl Value {
     fn empty() -> Value {
         Value::List(vec![])
-    }
-}
-
-impl Display for Value {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Value::Boolean(b) => write!(f, "#{}", if *b { "True" } else { "False" }),
-            Value::Function(_) => write!(f, "<function>"),
-            Value::Identifier(id) => write!(f, "Identifier({})", id.0),
-            Value::List(items) => {
-                write!(f, "'(")?;
-                for item in items {
-                    write!(f, "{} ", item)?;
-                }
-                write!(f, ")")
-            }
-            Value::NativeCall => write!(f, "<native-call>"),
-            Value::Number(n) => write!(f, "{}", n),
-            Value::PseudoValue(val) => write!(f, "#{}", val.0),
-            Value::String(s) => write!(f, "\"{}\"", s),
-            Value::Symbol(sym) => write!(f, ":{}", sym.0),
-            Value::Table(table) => {
-                write!(f, "{{")?;
-                for (key, value) in &table.borrow().contents {
-                    write!(f, "{}: {}, ", key, value)?;
-                }
-                write!(f, "}}")
-            }
-            Value::Unbound => write!(f, "#Nil"),
-            Value::Vector(items) => {
-                write!(f, "[")?;
-                for item in items {
-                    write!(f, "{} ", item)?;
-                }
-                write!(f, "]")
-            }
-        }
     }
 }
 
@@ -309,6 +272,59 @@ impl<'a> MetaProtocol for ast::Expr<'a> {
     }
 }
 
+pub struct PrintableValue<'a>(&'a State, &'a Value);
+
+impl<'a> Display for PrintableValue<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.1 {
+            Value::Identifier(id) => match self.0.strings.resolve(id.0) {
+                None => write!(f, "'<???>"),
+                Some(name) => write!(f, "'{}", name),
+            },
+            Value::Symbol(sym) => match self.0.strings.resolve(sym.0) {
+                None => write!(f, ":<???>"),
+                Some(name) => write!(f, ":{}", name),
+            },
+            Value::PseudoValue(pseudo) => match self.0.strings.resolve(pseudo.0) {
+                None => write!(f, "#<???>"),
+                Some(name) => write!(f, "#{}", name),
+            },
+            Value::Boolean(b) => write!(f, "#{}", if *b { "True" } else { "False" }),
+            Value::Function(_) => write!(f, "<function>"),
+            Value::List(items) => {
+                write!(f, "'(")?;
+                for item in items {
+                    write!(f, "{} ", PrintableValue(self.0, item))?;
+                }
+                write!(f, ")")
+            }
+            Value::NativeCall => write!(f, "<native-call>"),
+            Value::Number(n) => write!(f, "{}", n),
+            Value::String(s) => write!(f, "\"{}\"", s),
+            Value::Table(table) => {
+                write!(f, "{{")?;
+                for (key, value) in &table.borrow().contents {
+                    write!(
+                        f,
+                        "{}: {}, ",
+                        PrintableValue(self.0, &key),
+                        PrintableValue(self.0, &value)
+                    )?;
+                }
+                write!(f, "}}")
+            }
+            Value::Unbound => write!(f, "#Nil"),
+            Value::Vector(items) => {
+                write!(f, "[")?;
+                for item in items {
+                    write!(f, "{} ", PrintableValue(self.0, item))?;
+                }
+                write!(f, "]")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Table {
     contents: HashMap<Value, Value>,
@@ -414,8 +430,8 @@ impl Module for CoreModule {
                         .map(|arg| match arg {
                             Value::Identifier(id) => Ok(*id),
                             _ => Err(Error::invalid_native_call(
-                                "def-fn",
-                                &format!("Expected identifier, but got: {}", arg),
+                                "def-fn!",
+                                &format!("Expected identifier, but got: {}", PrintableValue(state, arg)),
                             )),
                         })
                         .collect::<Result<Vec<Identifier>, Error>>()?;
@@ -434,10 +450,10 @@ impl Module for CoreModule {
                     Ok(Value::empty())
                 }
                 _ => Err(Error::invalid_native_call(
-                    "def-fn",
+                    "def-fn!",
                     &format!(
                         "Expected identifier, argument list, and body, but got: {}",
-                        Value::List(args.to_vec())
+                        PrintableValue(state, &Value::List(args.to_vec()))
                     ),
                 )),
             }
@@ -461,7 +477,7 @@ impl Module for ArithmeticModule {
                     Ok(_) => {
                         return Err(Error::invalid_native_call(
                             "+",
-                            &format!("Expected number (got {})", arg),
+                            &format!("Expected number (got {})", PrintableValue(state, arg)),
                         ))
                     }
                     Err(err) => return Err(err),
@@ -531,7 +547,7 @@ impl Interpreter {
                         self.evaluate(&mut scope_state, &func.body)
                     }
                     Value::Table(_table) => todo!(),
-                    _ => Err(Error::value_not_callable(&callee)),
+                    _ => Err(Error::value_not_callable(PrintableValue(state, &callee))),
                 }),
             },
         }
@@ -602,6 +618,10 @@ impl Runtime {
                     .map(|_| ())
             })
     }
+
+    pub fn print_value<'a>(&'a self, value: &'a Value) -> PrintableValue<'a> {
+        PrintableValue(&self.state, value)
+    }
 }
 
 #[cfg(test)]
@@ -659,6 +679,7 @@ mod test {
     fn test_evaluate_quote() {
         let mut runtime = Runtime::new();
         assert_eq!(runtime.evaluate_expr("(#Call :__core$quote 1)"), Ok(Value::Number(1)));
+        assert_eq!(runtime.evaluate_expr("'(1)"), Ok(Value::List(vec![Value::Number(1)])));
     }
 
     #[test]
