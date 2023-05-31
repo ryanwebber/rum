@@ -9,6 +9,7 @@ where
     table: HashMap<String, Symbol>,
 }
 
+#[allow(dead_code)]
 impl<Symbol> StringInterner<Symbol>
 where
     Symbol: Eq + Hash + Clone + From<usize> + Ord,

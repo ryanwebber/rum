@@ -1,0 +1,5 @@
+;
+; Lists Module Prelude
+;
+
+(def-fn! first (l) (#Call :__list$first l))

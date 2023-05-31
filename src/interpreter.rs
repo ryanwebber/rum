@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use crate::{ast, gc::Gc, interner, parser, types};
+use crate::{ast, gc::Gc, interner, modules, parser, types};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ErrorType {
@@ -27,14 +27,14 @@ pub struct Error {
 }
 
 impl Error {
-    fn invalid_native_call(call: &str, msg: &str) -> Error {
+    pub fn invalid_native_call(call: &str, msg: &str) -> Error {
         Error {
             error_type: ErrorType::InvalidNativeCall,
             message: format!("Invalid native call: {} ({})", call, msg),
         }
     }
 
-    fn invalid_parse<T>(error: &T) -> Error
+    pub fn invalid_parse<T>(error: &T) -> Error
     where
         T: std::error::Error,
     {
@@ -44,35 +44,35 @@ impl Error {
         }
     }
 
-    fn no_such_string() -> Error {
+    pub fn no_such_string() -> Error {
         Error {
             error_type: ErrorType::InconsistentState,
             message: String::from("No such interned string"),
         }
     }
 
-    fn unbound_identifier(id: &str) -> Error {
+    pub fn unbound_identifier(id: &str) -> Error {
         Error {
             error_type: ErrorType::UnboundIdentifier,
             message: format!("Unbound identifier: {}", id),
         }
     }
 
-    fn unknown_native_call(name: &str) -> Error {
+    pub fn unknown_native_call(name: &str) -> Error {
         Error {
             error_type: ErrorType::UnknownNativeCall,
             message: format!("Unknown native call: {}", name),
         }
     }
 
-    fn unknown_pseudo_value(name: &str) -> Error {
+    pub fn unknown_pseudo_value(name: &str) -> Error {
         Error {
             error_type: ErrorType::UnknownPseudoValue,
             message: format!("Unknown pseudo value: {}", name),
         }
     }
 
-    fn value_not_callable(value: PrintableValue<'_>) -> Error {
+    pub fn value_not_callable(value: PrintableValue<'_>) -> Error {
         Error {
             error_type: ErrorType::ValueNotCallable,
             message: format!("Value is not callable: {}", value),
@@ -107,19 +107,19 @@ impl Display for Error {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct Symbol(types::Id);
+pub struct Symbol(pub types::Id);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct Identifier(types::Id);
+pub struct Identifier(pub types::Id);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct PseudoValue(types::Id);
+pub struct PseudoValue(pub types::Id);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Function {
-    body: Box<Value>,
-    parameters: Vec<Identifier>,
-    is_macro: bool,
+    pub body: Box<Value>,
+    pub parameters: Vec<Identifier>,
+    pub is_macro: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -139,20 +139,20 @@ pub enum Value {
 }
 
 impl Value {
-    fn empty() -> Value {
+    pub fn empty() -> Value {
         Value::List(vec![])
     }
 }
 
-struct SharedIdentifiers {
+pub struct SharedIdentifiers {
     globals: Identifier,
     parent_scope: Identifier,
 }
 
 pub struct State {
-    strings: StringInterner,
-    identifiers: Rc<SharedIdentifiers>,
-    environment: Gc<Table>,
+    pub strings: StringInterner,
+    pub identifiers: Rc<SharedIdentifiers>,
+    pub environment: Gc<Table>,
 }
 
 impl State {
@@ -210,7 +210,7 @@ impl State {
         }
     }
 
-    fn globals(&self) -> Gc<Table> {
+    pub fn globals(&self) -> Gc<Table> {
         match self
             .environment
             .borrow()
@@ -222,7 +222,7 @@ impl State {
         }
     }
 
-    fn closing(&self, function: &Function, parameters: Vec<Value>) -> State {
+    pub fn closing(&self, function: &Function, parameters: Vec<Value>) -> State {
         let mut state = State::new();
         state.strings = self.strings.clone();
 
@@ -272,7 +272,7 @@ impl<'a> MetaProtocol for ast::Expr<'a> {
     }
 }
 
-pub struct PrintableValue<'a>(&'a State, &'a Value);
+pub struct PrintableValue<'a>(pub &'a State, pub &'a Value);
 
 impl<'a> Display for PrintableValue<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -332,11 +332,18 @@ pub struct Table {
 }
 
 impl Table {
-    fn insert(&mut self, key: Value, value: Value) -> Option<Value> {
+    pub fn new() -> Self {
+        Table {
+            contents: HashMap::new(),
+            metatable: MetaTable::new(),
+        }
+    }
+
+    pub fn insert(&mut self, key: Value, value: Value) -> Option<Value> {
         self.contents.insert(key, value)
     }
 
-    fn get(&self, key: &Value) -> Option<&Value> {
+    pub fn get(&self, key: &Value) -> Option<&Value> {
         self.contents.get(key)
     }
 }
@@ -349,15 +356,6 @@ struct MetaTable {
 impl MetaTable {
     fn new() -> Self {
         MetaTable { table: None }
-    }
-}
-
-impl Table {
-    fn new() -> Self {
-        Table {
-            contents: HashMap::new(),
-            metatable: MetaTable::new(),
-        }
     }
 }
 
@@ -402,93 +400,6 @@ where
 
     fn prelude() -> &'static str {
         ""
-    }
-}
-
-struct CoreModule;
-
-impl Module for CoreModule {
-    fn register_builtins(&self, backend: &mut Backend) {
-        backend.insert("__core$quote", |_, _, args| {
-            if args.len() != 1 {
-                return Err(Error::invalid_native_call("quote", "Expected exactly one argument"));
-            }
-
-            Ok(args[0].clone())
-        });
-
-        backend.insert("__core$def_fn", |interpreter, state, args| {
-            let evaluated_args = args
-                .iter()
-                .map(|arg| interpreter.evaluate(state, arg))
-                .collect::<Result<Vec<Value>, Error>>()?;
-
-            match &evaluated_args[..] {
-                [Value::Identifier(id), Value::List(args), body] => {
-                    let parameters = args
-                        .iter()
-                        .map(|arg| match arg {
-                            Value::Identifier(id) => Ok(*id),
-                            _ => Err(Error::invalid_native_call(
-                                "def-fn!",
-                                &format!("Expected identifier, but got: {}", PrintableValue(state, arg)),
-                            )),
-                        })
-                        .collect::<Result<Vec<Identifier>, Error>>()?;
-
-                    let fname = state.strings.resolve(id.0).unwrap();
-
-                    state.globals().borrow_mut().insert(
-                        Value::Identifier(*id),
-                        Value::Function(Function {
-                            body: Box::new(body.clone()),
-                            parameters,
-                            is_macro: fname.ends_with('!'),
-                        }),
-                    );
-
-                    Ok(Value::empty())
-                }
-                _ => Err(Error::invalid_native_call(
-                    "def-fn!",
-                    &format!(
-                        "Expected identifier, argument list, and body, but got: {}",
-                        PrintableValue(state, &Value::List(args.to_vec()))
-                    ),
-                )),
-            }
-        });
-    }
-
-    fn prelude() -> &'static str {
-        include_str!("pkg/core.rum")
-    }
-}
-
-struct ArithmeticModule;
-
-impl Module for ArithmeticModule {
-    fn register_builtins(&self, backend: &mut Backend) {
-        backend.insert("__math$add", |interpreter, state, args| {
-            let mut sum = 0;
-            for arg in args {
-                match interpreter.evaluate(state, arg) {
-                    Ok(Value::Number(n)) => sum += n,
-                    Ok(_) => {
-                        return Err(Error::invalid_native_call(
-                            "+",
-                            &format!("Expected number (got {})", PrintableValue(state, arg)),
-                        ))
-                    }
-                    Err(err) => return Err(err),
-                }
-            }
-            Ok(Value::Number(sum))
-        });
-    }
-
-    fn prelude() -> &'static str {
-        include_str!("pkg/math.rum")
     }
 }
 
@@ -576,8 +487,9 @@ impl Runtime {
             },
         };
 
-        runtime.load_module(&CoreModule).unwrap();
-        runtime.load_module(&ArithmeticModule).unwrap();
+        runtime.load_module(&modules::core::Core).unwrap();
+        runtime.load_module(&modules::math::Math).unwrap();
+        runtime.load_module(&modules::lists::Lists).unwrap();
 
         runtime
     }
@@ -673,25 +585,5 @@ mod test {
                 _ => false,
             }
         });
-    }
-
-    #[test]
-    fn test_evaluate_quote() {
-        let mut runtime = Runtime::new();
-        assert_eq!(runtime.evaluate_expr("(#Call :__core$quote 1)"), Ok(Value::Number(1)));
-        assert_eq!(runtime.evaluate_expr("'(1)"), Ok(Value::List(vec![Value::Number(1)])));
-    }
-
-    #[test]
-    fn test_evaluate_add() {
-        let mut runtime = Runtime::new();
-        assert_eq!(runtime.evaluate_expr("(#Call :__math$add 1 2 3)"), Ok(Value::Number(6)));
-    }
-
-    #[test]
-    fn test_evaluate_function_call() {
-        let mut runtime = Runtime::new();
-        assert_eq!(runtime.evaluate_expr("(def-fn! dbl (a) (+ a a))"), Ok(Value::empty()));
-        assert_eq!(runtime.evaluate_expr("(dbl 5)"), Ok(Value::Number(10)));
     }
 }
