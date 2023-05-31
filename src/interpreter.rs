@@ -429,6 +429,7 @@ impl Interpreter {
             Value::PseudoValue(PseudoValue(val)) => match state.strings.resolve(*val) {
                 None => Err(Error::no_such_string()),
                 Some("Call") => Ok(Value::NativeCall),
+                Some("Env") => Ok(Value::Table(state.environment.clone())),
                 Some("Nil") => Ok(Value::Unbound),
                 Some("True") => Ok(Value::Boolean(true)),
                 Some("False") => Ok(Value::Boolean(false)),
@@ -573,6 +574,9 @@ mod test {
                 Value::Vector(vec![Value::Number(2)]),
             ]))
         );
+
+        assert!(matches!(runtime.evaluate_expr("#Env"), Ok(Value::Table(_))));
+
         assert!({
             let result = runtime.evaluate(&Value::Function(Function {
                 body: Box::new(Value::Number(1)),
