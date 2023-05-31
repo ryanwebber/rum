@@ -16,3 +16,6 @@
 
 ; with
 (def-fn! with! (bindings body) (#Call :__core$with bindings body))
+
+; set
+(def-fn! set (table key value) (#Call :__core$set table key value))

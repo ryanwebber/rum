@@ -1,4 +1,4 @@
-use crate::interpreter::{Backend, Error, Function, Identifier, Module, PrintableValue, Value};
+use crate::interpreter::{Backend, Error, Function, Identifier, Module, PrintableValue, Table, Value};
 
 pub struct Core;
 
@@ -114,6 +114,27 @@ impl Module for Core {
                 )),
             }
         });
+
+        backend.insert("__core$set", |interpreter, state, args| {
+            let evaluated_args = args
+                .iter()
+                .map(|arg| interpreter.evaluate(state, arg))
+                .collect::<Result<Vec<Value>, Error>>()?;
+
+            match &evaluated_args[..] {
+                [Value::Table(table), key, value] => {
+                    table.borrow_mut().insert(key.clone(), value.clone());
+                    return Ok(Value::empty());
+                }
+                _ => Err(Error::invalid_native_call(
+                    "set",
+                    &format!(
+                        "Expected table, key, and value, but got: {}",
+                        PrintableValue(state, &Value::List(args.to_vec()))
+                    ),
+                )),
+            }
+        });
     }
 
     fn prelude() -> &'static str {
@@ -160,5 +181,12 @@ mod tests {
             runtime.evaluate_expr("(with! { x => 2 y => 3 } (+ x (+ x y)))"),
             Ok(Value::Number(7))
         );
+    }
+
+    #[test]
+    fn test_set() {
+        let mut runtime = interpreter::Runtime::new();
+        assert!(runtime.evaluate_expr("(set #Env 'a 1)").is_ok());
+        assert_eq!(runtime.evaluate_expr("a"), Ok(Value::Number(1)));
     }
 }
