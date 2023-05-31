@@ -68,6 +68,52 @@ impl Module for Core {
                 ),
             )),
         });
+
+        backend.insert("__core$set", |interpreter, state, args| {
+            let evaluated_args = args
+                .iter()
+                .map(|arg| interpreter.evaluate(state, arg))
+                .collect::<Result<Vec<Value>, Error>>()?;
+
+            match &evaluated_args[..] {
+                [Value::List(bindings), body] => {
+                    let (parameters, args): (Vec<Identifier>, Vec<Value>) = bindings
+                        .into_iter()
+                        .map(|value| match value {
+                            Value::List(list) => match &list[..] {
+                                [Value::Identifier(id), value] => Ok((*id, interpreter.evaluate(state, &value)?)),
+                                _ => Err(Error::invalid_native_call(
+                                    "set",
+                                    &format!("Expected binding pair, but got: {}", PrintableValue(state, value)),
+                                )),
+                            },
+                            _ => Err(Error::invalid_native_call(
+                                "set",
+                                &format!("Expected binding pair, but got: {}", PrintableValue(state, value)),
+                            )),
+                        })
+                        .collect::<Result<Vec<(Identifier, Value)>, Error>>()?
+                        .into_iter()
+                        .unzip();
+
+                    let function = Function {
+                        body: Box::new(body.clone()),
+                        parameters,
+                        is_macro: false,
+                    };
+
+                    let mut new_state = state.closing(&function, args);
+                    interpreter.evaluate(&mut new_state, &function.body)
+                }
+                _ => Err(Error::invalid_native_call(
+                    "set",
+                    &format!(
+                        "Expected two arguments, but got: {}",
+                        PrintableValue(state, &Value::List(args.to_vec()))
+                    ),
+                )),
+            }
+        });
     }
 
     fn prelude() -> &'static str {
@@ -105,5 +151,14 @@ mod tests {
     fn test_eval() {
         let mut runtime = interpreter::Runtime::new();
         assert_eq!(runtime.evaluate_expr("(eval '(+ 1 2))"), Ok(Value::Number(3)));
+    }
+
+    #[test]
+    fn test_set() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.evaluate_expr("(set! { x => 2 y => 3 } (+ x (+ x y)))"),
+            Ok(Value::Number(7))
+        );
     }
 }
