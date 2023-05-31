@@ -122,13 +122,19 @@ pub struct Function {
     pub is_macro: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeCallType {
+    Call,
+    Macro,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Value {
     Boolean(bool),
     Function(Function),
     Identifier(Identifier),
     List(Vec<Value>),
-    NativeCall,
+    NativeCall(NativeCallType),
     Number(types::Numeric),
     PseudoValue(PseudoValue),
     String(String),
@@ -298,7 +304,7 @@ impl<'a> Display for PrintableValue<'a> {
                 }
                 write!(f, ")")
             }
-            Value::NativeCall => write!(f, "<native-call>"),
+            Value::NativeCall(_) => write!(f, "<native-call>"),
             Value::Number(n) => write!(f, "{}", n),
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Table(table) => {
@@ -381,12 +387,23 @@ impl Backend {
         state: &mut State,
         sym: Symbol,
         args: &[Value],
+        call_type: NativeCallType,
     ) -> Result<Value, Error> {
         match state.strings.resolve(sym.0) {
             None => Err(Error::no_such_string()),
             Some(name) => match self.builtins.get(&name[1..]) {
                 None => Err(Error::unknown_native_call(name)),
-                Some(call) => call(interpreter, state, args),
+                Some(call) => {
+                    let args = match call_type {
+                        NativeCallType::Macro => args.to_vec(),
+                        NativeCallType::Call => args
+                            .iter()
+                            .map(|arg| interpreter.evaluate(state, arg))
+                            .collect::<Result<Vec<Value>, Error>>()?,
+                    };
+
+                    call(interpreter, state, &args)
+                }
             },
         }
     }
@@ -423,12 +440,13 @@ impl Interpreter {
             | Value::Symbol(_)
             | Value::Table(_)
             | Value::Vector(_)
-            | Value::NativeCall
+            | Value::NativeCall(_)
             | Value::Unbound => Ok(value.clone()),
             Value::Identifier(id) => state.try_resolve(id).map(|v| v.clone()),
             Value::PseudoValue(PseudoValue(val)) => match state.strings.resolve(*val) {
                 None => Err(Error::no_such_string()),
-                Some("Call") => Ok(Value::NativeCall),
+                Some("Call") => Ok(Value::NativeCall(NativeCallType::Call)),
+                Some("CallMacro") => Ok(Value::NativeCall(NativeCallType::Macro)),
                 Some("Env") => Ok(Value::Table(state.environment.clone())),
                 Some("Nil") => Ok(Value::Unbound),
                 Some("True") => Ok(Value::Boolean(true)),
@@ -437,13 +455,13 @@ impl Interpreter {
             },
             Value::List(items) => match items.split_first() {
                 None => Ok(Value::empty()),
-                Some((first, args)) => self.evaluate(state, first).and_then(|callee| match callee {
-                    Value::NativeCall => match args {
+                Some((first, args)) => self.evaluate(state, first).and_then(|callee| match &callee {
+                    Value::NativeCall(call_type) => match args {
                         [] => Err(Error::invalid_native_call(
                             "<no name>",
                             "Expected at least one argument",
                         )),
-                        [Value::Symbol(sym), args @ ..] => self.backend.try_call(self, state, *sym, args),
+                        [Value::Symbol(sym), args @ ..] => self.backend.try_call(self, state, *sym, args, *call_type),
                         _ => Err(Error::invalid_native_call("<bad name>", "Expected symbol")),
                     },
                     Value::Function(func) => {
@@ -491,6 +509,7 @@ impl Runtime {
         runtime.load_module(&modules::core::Core).unwrap();
         runtime.load_module(&modules::math::Math).unwrap();
         runtime.load_module(&modules::lists::Lists).unwrap();
+        runtime.load_module(&modules::tables::Tables).unwrap();
 
         runtime
     }
@@ -565,7 +584,10 @@ mod test {
         assert_eq!(runtime.evaluate_expr("#True"), Ok(Value::Boolean(true)));
         assert_eq!(runtime.evaluate_expr("#False"), Ok(Value::Boolean(false)));
         assert_eq!(runtime.evaluate_expr("#Yo"), Err(Error::unknown_pseudo_value("Yo")));
-        assert_eq!(runtime.evaluate_expr("#Call"), Ok(Value::NativeCall));
+        assert_eq!(
+            runtime.evaluate_expr("#Call"),
+            Ok(Value::NativeCall(NativeCallType::Call))
+        );
         assert_eq!(
             runtime.evaluate_expr("[1 () [2]]"),
             Ok(Value::Vector(vec![

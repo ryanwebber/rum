@@ -4,8 +4,8 @@ pub struct Lists;
 
 impl Module for Lists {
     fn register_builtins(&self, backend: &mut Backend) {
-        backend.insert("__list$first", |interpreter, state, args| match args {
-            [value] => match interpreter.evaluate(state, value)? {
+        backend.insert("__list$first", |_, state, args| match args {
+            [value] => match value {
                 Value::List(list) => match list.first() {
                     Some(value) => Ok(value.clone()),
                     None => Err(Error::invalid_native_call("first", "Expected non-empty list")),

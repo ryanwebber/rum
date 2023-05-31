@@ -1,19 +1,15 @@
 use crate::{
-    interpreter::{Backend, Error, Interpreter, Module, PrintableValue, State, Value},
+    interpreter::{Backend, Error, Module, PrintableValue, State, Value},
     types,
 };
 
 pub struct Math;
 
 impl Math {
-    fn eval_as_numbers(
-        interpreter: &Interpreter,
-        state: &mut State,
-        args: &[Value],
-    ) -> Result<Vec<types::Numeric>, Error> {
+    fn as_numbers(state: &mut State, args: &[Value]) -> Result<Vec<types::Numeric>, Error> {
         args.iter()
-            .map(|arg| match interpreter.evaluate(state, arg)? {
-                Value::Number(n) => Ok(n),
+            .map(|arg| match arg {
+                Value::Number(n) => Ok(*n),
                 _ => Err(Error::invalid_native_call(
                     "+",
                     &format!("Expected number (got {})", PrintableValue(state, arg)),
@@ -25,24 +21,24 @@ impl Math {
 
 impl Module for Math {
     fn register_builtins(&self, backend: &mut Backend) {
-        backend.insert("__math$add", |interpreter, state, args| {
-            let evaluated_args = Self::eval_as_numbers(interpreter, state, args)?;
+        backend.insert("__math$add", |_, state, args| {
+            let evaluated_args = Self::as_numbers(state, args)?;
             match evaluated_args.into_iter().reduce(|acc, item| acc + item) {
                 Some(n) => Ok(Value::Number(n)),
                 None => Err(Error::invalid_native_call("+", "Expected at least one argument")),
             }
         });
 
-        backend.insert("__math$sub", |interpreter, state, args| {
-            let evaluated_args = Self::eval_as_numbers(interpreter, state, args)?;
+        backend.insert("__math$sub", |_, state, args| {
+            let evaluated_args = Self::as_numbers(state, args)?;
             match evaluated_args.into_iter().reduce(|acc, item| acc - item) {
                 Some(n) => Ok(Value::Number(n)),
                 None => Err(Error::invalid_native_call("-", "Expected at least one argument")),
             }
         });
 
-        backend.insert("__math$mul", |interpreter, state, args| {
-            let evaluated_args = Self::eval_as_numbers(interpreter, state, args)?;
+        backend.insert("__math$mul", |_, state, args| {
+            let evaluated_args = Self::as_numbers(state, args)?;
             match evaluated_args.into_iter().reduce(|acc, item| acc * item) {
                 Some(n) => Ok(Value::Number(n)),
                 None => Err(Error::invalid_native_call("*", "Expected at least one argument")),

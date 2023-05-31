@@ -13,6 +13,7 @@ mod modules {
     pub(crate) mod core;
     pub(crate) mod lists;
     pub(crate) mod math;
+    pub(crate) mod tables;
 }
 
 extern crate lalrpop_util;

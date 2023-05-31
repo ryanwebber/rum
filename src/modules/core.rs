@@ -1,4 +1,4 @@
-use crate::interpreter::{Backend, Error, Function, Identifier, Module, PrintableValue, Table, Value};
+use crate::interpreter::{Backend, Error, Function, Identifier, Module, PrintableValue, Value};
 
 pub struct Core;
 
@@ -12,54 +12,43 @@ impl Module for Core {
             Ok(args[0].clone())
         });
 
-        backend.insert("__core$def_fn", |interpreter, state, args| {
-            let evaluated_args = args
-                .iter()
-                .map(|arg| interpreter.evaluate(state, arg))
-                .collect::<Result<Vec<Value>, Error>>()?;
+        backend.insert("__core$def_fn", |_, state, args| match args {
+            [Value::Identifier(id), Value::List(args), body] => {
+                let parameters = args
+                    .iter()
+                    .map(|arg| match arg {
+                        Value::Identifier(id) => Ok(*id),
+                        _ => Err(Error::invalid_native_call(
+                            "def-fn!",
+                            &format!("Expected identifier, but got: {}", PrintableValue(state, arg)),
+                        )),
+                    })
+                    .collect::<Result<Vec<Identifier>, Error>>()?;
 
-            match &evaluated_args[..] {
-                [Value::Identifier(id), Value::List(args), body] => {
-                    let parameters = args
-                        .iter()
-                        .map(|arg| match arg {
-                            Value::Identifier(id) => Ok(*id),
-                            _ => Err(Error::invalid_native_call(
-                                "def-fn!",
-                                &format!("Expected identifier, but got: {}", PrintableValue(state, arg)),
-                            )),
-                        })
-                        .collect::<Result<Vec<Identifier>, Error>>()?;
+                let fname = state.strings.resolve(id.0).unwrap();
 
-                    let fname = state.strings.resolve(id.0).unwrap();
+                state.globals().borrow_mut().insert(
+                    Value::Identifier(*id),
+                    Value::Function(Function {
+                        body: Box::new(body.clone()),
+                        parameters,
+                        is_macro: fname.ends_with('!'),
+                    }),
+                );
 
-                    state.globals().borrow_mut().insert(
-                        Value::Identifier(*id),
-                        Value::Function(Function {
-                            body: Box::new(body.clone()),
-                            parameters,
-                            is_macro: fname.ends_with('!'),
-                        }),
-                    );
-
-                    Ok(Value::empty())
-                }
-                _ => Err(Error::invalid_native_call(
-                    "def-fn!",
-                    &format!(
-                        "Expected identifier, argument list, and body, but got: {}",
-                        PrintableValue(state, &Value::List(args.to_vec()))
-                    ),
-                )),
+                Ok(Value::empty())
             }
+            _ => Err(Error::invalid_native_call(
+                "def-fn!",
+                &format!(
+                    "Expected identifier, argument list, and body, but got: {}",
+                    PrintableValue(state, &Value::List(args.to_vec()))
+                ),
+            )),
         });
 
         backend.insert("__core$evaluate", |interpreter, state, args| match args {
-            [value] => {
-                let value = interpreter.evaluate(state, value)?;
-                let value = interpreter.evaluate(state, &value)?;
-                return Ok(value);
-            }
+            [value] => interpreter.evaluate(state, &value),
             _ => Err(Error::invalid_native_call(
                 "evaluate",
                 &format!(
@@ -69,71 +58,57 @@ impl Module for Core {
             )),
         });
 
-        backend.insert("__core$with", |interpreter, state, args| {
-            let evaluated_args = args
-                .iter()
-                .map(|arg| interpreter.evaluate(state, arg))
-                .collect::<Result<Vec<Value>, Error>>()?;
-
-            match &evaluated_args[..] {
-                [Value::List(bindings), body] => {
-                    let (parameters, args): (Vec<Identifier>, Vec<Value>) = bindings
-                        .into_iter()
-                        .map(|value| match value {
-                            Value::List(list) => match &list[..] {
-                                [Value::Identifier(id), value] => Ok((*id, interpreter.evaluate(state, &value)?)),
-                                _ => Err(Error::invalid_native_call(
-                                    "with!",
-                                    &format!("Expected binding pair, but got: {}", PrintableValue(state, value)),
-                                )),
-                            },
+        backend.insert("__core$with", |interpreter, state, args| match args {
+            [Value::List(bindings), body] => {
+                let (parameters, args): (Vec<Identifier>, Vec<Value>) = bindings
+                    .into_iter()
+                    .map(|value| match value {
+                        Value::List(list) => match &list[..] {
+                            [Value::Identifier(id), value] => Ok((*id, interpreter.evaluate(state, &value)?)),
                             _ => Err(Error::invalid_native_call(
                                 "with!",
                                 &format!("Expected binding pair, but got: {}", PrintableValue(state, value)),
                             )),
-                        })
-                        .collect::<Result<Vec<(Identifier, Value)>, Error>>()?
-                        .into_iter()
-                        .unzip();
+                        },
+                        _ => Err(Error::invalid_native_call(
+                            "with!",
+                            &format!("Expected binding pair, but got: {}", PrintableValue(state, value)),
+                        )),
+                    })
+                    .collect::<Result<Vec<(Identifier, Value)>, Error>>()?
+                    .into_iter()
+                    .unzip();
 
-                    let function = Function {
-                        body: Box::new(body.clone()),
-                        parameters,
-                        is_macro: false,
-                    };
+                let function = Function {
+                    body: Box::new(body.clone()),
+                    parameters,
+                    is_macro: false,
+                };
 
-                    let mut new_state = state.closing(&function, args);
-                    interpreter.evaluate(&mut new_state, &function.body)
-                }
-                _ => Err(Error::invalid_native_call(
-                    "with!",
-                    &format!(
-                        "Expected two arguments, but got: {}",
-                        PrintableValue(state, &Value::List(args.to_vec()))
-                    ),
-                )),
+                let mut new_state = state.closing(&function, args);
+                interpreter.evaluate(&mut new_state, &function.body)
             }
+            _ => Err(Error::invalid_native_call(
+                "with!",
+                &format!(
+                    "Expected two arguments, but got: {}",
+                    PrintableValue(state, &Value::List(args.to_vec()))
+                ),
+            )),
         });
 
-        backend.insert("__core$set", |interpreter, state, args| {
-            let evaluated_args = args
-                .iter()
-                .map(|arg| interpreter.evaluate(state, arg))
-                .collect::<Result<Vec<Value>, Error>>()?;
-
-            match &evaluated_args[..] {
-                [Value::Table(table), key, value] => {
-                    table.borrow_mut().insert(key.clone(), value.clone());
-                    return Ok(Value::empty());
-                }
-                _ => Err(Error::invalid_native_call(
-                    "set",
-                    &format!(
-                        "Expected table, key, and value, but got: {}",
-                        PrintableValue(state, &Value::List(args.to_vec()))
-                    ),
-                )),
+        backend.insert("__core$set", |_, state, args| match args {
+            [Value::Table(table), key, value] => {
+                table.borrow_mut().insert(key.clone(), value.clone());
+                return Ok(Value::empty());
             }
+            _ => Err(Error::invalid_native_call(
+                "set",
+                &format!(
+                    "Expected table, key, and value, but got: {}",
+                    PrintableValue(state, &Value::List(args.to_vec()))
+                ),
+            )),
         });
     }
 
