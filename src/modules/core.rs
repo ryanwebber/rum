@@ -53,6 +53,21 @@ impl Module for Core {
                 )),
             }
         });
+
+        backend.insert("__core$evaluate", |interpreter, state, args| match args {
+            [value] => {
+                let value = interpreter.evaluate(state, value)?;
+                let value = interpreter.evaluate(state, &value)?;
+                return Ok(value);
+            }
+            _ => Err(Error::invalid_native_call(
+                "evaluate",
+                &format!(
+                    "Expected exactly one argument, but got: {}",
+                    PrintableValue(state, &Value::List(args.to_vec()))
+                ),
+            )),
+        });
     }
 
     fn prelude() -> &'static str {
@@ -73,16 +88,22 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_quote() {
+    fn test_quote() {
         let mut runtime = interpreter::Runtime::new();
         assert_eq!(runtime.evaluate_expr("(#Call :__core$quote 1)"), Ok(Value::Number(1)));
         assert_eq!(runtime.evaluate_expr("'(1)"), Ok(Value::List(vec![Value::Number(1)])));
     }
 
     #[test]
-    fn test_evaluate_def_fn() {
+    fn test_def_fn() {
         let mut runtime = interpreter::Runtime::new();
         assert_eq!(runtime.evaluate_expr("(def-fn! dbl (a) (+ a a))"), Ok(Value::empty()));
         assert_eq!(runtime.evaluate_expr("(dbl 5)"), Ok(Value::Number(10)));
+    }
+
+    #[test]
+    fn test_eval() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(runtime.evaluate_expr("(eval '(+ 1 2))"), Ok(Value::Number(3)));
     }
 }

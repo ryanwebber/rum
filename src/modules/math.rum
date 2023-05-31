@@ -4,3 +4,9 @@
 
 ; addition
 (def-fn! + (a b) (#Call :__math$add a b))
+
+; subtraction
+(def-fn! - (a b) (#Call :__math$sub a b))
+
+; multiplication
+(def-fn! * (a b) (#Call :__math$mul a b))
