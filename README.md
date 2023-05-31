@@ -53,7 +53,7 @@ An embeddable, Lua-inspired Lisp language.
 (#True #False #FooBar)
 
 ; Metaprogramming
-(eval ('add 'a 'b))
+(eval '(add 1 2))
 ```
 
 ## Philosophy
