@@ -69,7 +69,7 @@ impl Module for Core {
             )),
         });
 
-        backend.insert("__core$set", |interpreter, state, args| {
+        backend.insert("__core$with", |interpreter, state, args| {
             let evaluated_args = args
                 .iter()
                 .map(|arg| interpreter.evaluate(state, arg))
@@ -83,12 +83,12 @@ impl Module for Core {
                             Value::List(list) => match &list[..] {
                                 [Value::Identifier(id), value] => Ok((*id, interpreter.evaluate(state, &value)?)),
                                 _ => Err(Error::invalid_native_call(
-                                    "set",
+                                    "with!",
                                     &format!("Expected binding pair, but got: {}", PrintableValue(state, value)),
                                 )),
                             },
                             _ => Err(Error::invalid_native_call(
-                                "set",
+                                "with!",
                                 &format!("Expected binding pair, but got: {}", PrintableValue(state, value)),
                             )),
                         })
@@ -106,7 +106,7 @@ impl Module for Core {
                     interpreter.evaluate(&mut new_state, &function.body)
                 }
                 _ => Err(Error::invalid_native_call(
-                    "set",
+                    "with!",
                     &format!(
                         "Expected two arguments, but got: {}",
                         PrintableValue(state, &Value::List(args.to_vec()))
@@ -154,10 +154,10 @@ mod tests {
     }
 
     #[test]
-    fn test_set() {
+    fn test_with() {
         let mut runtime = interpreter::Runtime::new();
         assert_eq!(
-            runtime.evaluate_expr("(set! { x => 2 y => 3 } (+ x (+ x y)))"),
+            runtime.evaluate_expr("(with! { x => 2 y => 3 } (+ x (+ x y)))"),
             Ok(Value::Number(7))
         );
     }

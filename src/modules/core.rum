@@ -14,5 +14,5 @@
 ; evaluate
 (def-fn! eval (expr) (#Call :__core$evaluate expr))
 
-; set
-(def-fn! set! (bindings body) (#Call :__core$set bindings body))
+; with
+(def-fn! with! (bindings body) (#Call :__core$with bindings body))
