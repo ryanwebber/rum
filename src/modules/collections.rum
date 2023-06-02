@@ -1,0 +1,9 @@
+;
+; Collections Module Prelude
+;
+
+; first
+(def-fn! first (l) ((#Bridge :__collections$first) l))
+
+; set
+(def-fn! set (table key value) ((#Bridge :__collections$set) table key value))

@@ -3,10 +3,10 @@
 ;
 
 ; addition
-(def-fn! + (a b) (#Call :__math$add a b))
+(def-fn! + () (apply (#Bridge :__math$add) #ArgRest))
 
 ; subtraction
-(def-fn! - (a b) (#Call :__math$sub a b))
+(def-fn! - () (apply (#Bridge :__math$sub) #ArgRest))
 
 ; multiplication
-(def-fn! * (a b) (#Call :__math$mul a b))
+(def-fn! * () (apply (#Bridge :__math$mul) #ArgRest))

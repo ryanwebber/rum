@@ -2,17 +2,21 @@
 ; Core Module Prelude
 ;
 
-; def-fn
-(#Call :__core$def_fn
-    (#CallMacro :__core$quote def-fn!)
-    (#CallMacro :__core$quote (name args body))
-    (#CallMacro :__core$quote (#Call :__core$def_fn name args body)))
+((#Bridge :__core$def_fn)
+    ((#Bridge :__core$quote) def-fn!)
+    ((#Bridge :__core$quote) (name args body))
+    ((#Bridge :__core$quote) ((#Bridge :__core$def_fn) name args body)))
+
+(def-fn! apply (f args) ((#Bridge :__core$apply) f args))
 
 ; quote
 (def-fn! quote! (a) a)
 
 ; evaluate
-(def-fn! eval (expr) (#Call :__core$evaluate expr))
+(def-fn! eval (expr) ((#Bridge :__core$evaluate) expr))
 
 ; with
-(def-fn! with! (bindings body) (#Call :__core$with bindings body))
+(def-fn! with! (bindings body) ((#Bridge :__core$with) bindings body))
+
+; do
+(def-fn! do () ((#Bridge :__core$do) #ArgRest))

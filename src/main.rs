@@ -1,6 +1,6 @@
 use std::io::{self, BufRead, Write};
 
-use interpreter::Value;
+use interpreter::{NativeCallType, Value};
 
 mod ast;
 mod gc;
@@ -10,10 +10,9 @@ mod parser;
 mod types;
 
 mod modules {
+    pub(crate) mod collections;
     pub(crate) mod core;
-    pub(crate) mod lists;
     pub(crate) mod math;
-    pub(crate) mod tables;
 }
 
 extern crate lalrpop_util;
@@ -31,11 +30,11 @@ fn print_banner() {
 
 impl interpreter::Module for ReplModule {
     fn register_builtins(&self, backend: &mut interpreter::Backend) {
-        backend.insert("repl$exit", |_, _, _| {
+        backend.register("repl$exit", NativeCallType::Default, |_, _, _| {
             std::process::exit(0);
         });
 
-        backend.insert("repl$help", |_, _, _| {
+        backend.register("repl$help", NativeCallType::Default, |_, _, _| {
             print_banner();
             return Ok(Value::empty());
         });

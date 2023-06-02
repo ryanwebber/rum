@@ -1,5 +1,5 @@
 use crate::{
-    interpreter::{Backend, Error, Module, PrintableValue, State, Value},
+    interpreter::{Backend, Error, Module, NativeCallType, PrintableValue, State, Value},
     types,
 };
 
@@ -10,7 +10,7 @@ impl Math {
         args.iter()
             .map(|arg| match arg {
                 Value::Number(n) => Ok(*n),
-                _ => Err(Error::invalid_native_call(
+                _ => Err(Error::invalid_bridge_call(
                     "+",
                     &format!("Expected number (got {})", PrintableValue(state, arg)),
                 )),
@@ -21,27 +21,27 @@ impl Math {
 
 impl Module for Math {
     fn register_builtins(&self, backend: &mut Backend) {
-        backend.insert("__math$add", |_, state, args| {
+        backend.register("__math$add", NativeCallType::Default, |_, state, args| {
             let evaluated_args = Self::as_numbers(state, args)?;
             match evaluated_args.into_iter().reduce(|acc, item| acc + item) {
                 Some(n) => Ok(Value::Number(n)),
-                None => Err(Error::invalid_native_call("+", "Expected at least one argument")),
+                None => Err(Error::invalid_bridge_call("+", "Expected at least one argument")),
             }
         });
 
-        backend.insert("__math$sub", |_, state, args| {
+        backend.register("__math$sub", NativeCallType::Default, |_, state, args| {
             let evaluated_args = Self::as_numbers(state, args)?;
             match evaluated_args.into_iter().reduce(|acc, item| acc - item) {
                 Some(n) => Ok(Value::Number(n)),
-                None => Err(Error::invalid_native_call("-", "Expected at least one argument")),
+                None => Err(Error::invalid_bridge_call("-", "Expected at least one argument")),
             }
         });
 
-        backend.insert("__math$mul", |_, state, args| {
+        backend.register("__math$mul", NativeCallType::Default, |_, state, args| {
             let evaluated_args = Self::as_numbers(state, args)?;
             match evaluated_args.into_iter().reduce(|acc, item| acc * item) {
                 Some(n) => Ok(Value::Number(n)),
-                None => Err(Error::invalid_native_call("*", "Expected at least one argument")),
+                None => Err(Error::invalid_bridge_call("*", "Expected at least one argument")),
             }
         });
     }
@@ -59,7 +59,7 @@ mod tests {
     #[test]
     fn test_add() {
         let mut runtime = interpreter::Runtime::new();
-        assert_eq!(runtime.evaluate_expr("(+ 4 5)"), Ok(interpreter::Value::Number(9)));
+        assert_eq!(runtime.evaluate_expr("(+ 1 2 3)"), Ok(interpreter::Value::Number(6)));
     }
 
     #[test]

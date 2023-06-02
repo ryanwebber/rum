@@ -1,6 +1,0 @@
-;
-; Tables Module Prelude
-;
-
-; set
-(def-fn! set (table key value) (#Call :__core$set table key value))

@@ -10,7 +10,7 @@ use crate::{ast, gc::Gc, interner, modules, parser, types};
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum ErrorType {
     InconsistentState,
-    InvalidNativeCall,
+    InvalidBridgeCall,
     InvalidParse,
     UnboundIdentifier,
     UnknownNativeCall,
@@ -26,11 +26,15 @@ pub struct Error {
     message: String,
 }
 
+trait Callable {
+    fn call(&self, interpreter: &Interpreter, state: &mut State, args: &[Value]) -> Result<Value, Error>;
+}
+
 impl Error {
-    pub fn invalid_native_call(call: &str, msg: &str) -> Error {
+    pub fn invalid_bridge_call(call: &str, msg: &str) -> Error {
         Error {
-            error_type: ErrorType::InvalidNativeCall,
-            message: format!("Invalid native call: {} ({})", call, msg),
+            error_type: ErrorType::InvalidBridgeCall,
+            message: format!("Invalid bridge call: {} ({})", call, msg),
         }
     }
 
@@ -93,7 +97,7 @@ impl Display for Error {
             "[{}]",
             match self.error_type {
                 ErrorType::InconsistentState => "InconsistentState",
-                ErrorType::InvalidNativeCall => "InvalidNativeCall",
+                ErrorType::InvalidBridgeCall => "InvalidBridgeCall",
                 ErrorType::InvalidParse => "InvalidParse",
                 ErrorType::UnboundIdentifier => "UnboundIdentifier",
                 ErrorType::UnknownNativeCall => "UnknownNativeCall",
@@ -122,19 +126,40 @@ pub struct Function {
     pub is_macro: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NativeCallType {
-    Call,
-    Macro,
+impl Function {
+    fn call(&self, interpreter: &Interpreter, state: &mut State, args: &[Value]) -> Result<Value, Error> {
+        let evaluated_args = if self.is_macro {
+            args.to_vec()
+        } else {
+            args.iter()
+                .map(|arg| interpreter.evaluate(state, arg))
+                .collect::<Result<Vec<Value>, Error>>()?
+        };
+
+        let mut state = state.closing(self, evaluated_args);
+        interpreter.evaluate(&mut state, &self.body)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NativeFunction {
+    pub sym: Symbol,
+}
+
+impl NativeFunction {
+    fn call(&self, interpreter: &Interpreter, state: &mut State, args: &[Value]) -> Result<Value, Error> {
+        interpreter.backend.try_call(interpreter, state, self.sym, args)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Value {
     Boolean(bool),
+    Bridge,
     Function(Function),
+    NativeFunction(NativeFunction),
     Identifier(Identifier),
     List(Vec<Value>),
-    NativeCall(NativeCallType),
     Number(types::Numeric),
     PseudoValue(PseudoValue),
     String(String),
@@ -153,6 +178,7 @@ impl Value {
 pub struct SharedIdentifiers {
     globals: Identifier,
     parent_scope: Identifier,
+    arg_rest: Identifier,
 }
 
 pub struct State {
@@ -167,6 +193,7 @@ impl State {
         let identifiers = Rc::new(SharedIdentifiers {
             globals: Identifier(strings.get_or_intern("__globals")),
             parent_scope: Identifier(strings.get_or_intern("__parent_scope")),
+            arg_rest: Identifier(strings.get_or_intern("__arg_rest")),
         });
 
         let environment = Gc::new(Table::new());
@@ -242,11 +269,31 @@ impl State {
             Value::Table(self.globals()),
         );
 
+        let arg_rest: Value = {
+            if function.parameters.len() > parameters.len() {
+                Value::List(vec![])
+            } else {
+                Value::List(parameters[function.parameters.len()..].to_vec())
+            }
+        };
+
+        state
+            .environment
+            .borrow_mut()
+            .insert(Value::Identifier(self.identifiers.arg_rest), arg_rest);
+
         for (value, name) in parameters.into_iter().zip(function.parameters.iter()) {
             state.environment.borrow_mut().insert(Value::Identifier(*name), value);
         }
 
         state
+    }
+
+    pub fn arg_rest(&self) -> Option<Value> {
+        self.environment
+            .borrow()
+            .get(&Value::Identifier(self.identifiers.arg_rest))
+            .map(|value| value.clone())
     }
 }
 
@@ -288,13 +335,14 @@ impl<'a> Display for PrintableValue<'a> {
                 Some(name) => write!(f, "'{}", name),
             },
             Value::Symbol(sym) => match self.0.strings.resolve(sym.0) {
-                None => write!(f, ":<???>"),
-                Some(name) => write!(f, ":{}", name),
+                None => write!(f, "<???>"),
+                Some(name) => write!(f, "{}", name),
             },
             Value::PseudoValue(pseudo) => match self.0.strings.resolve(pseudo.0) {
                 None => write!(f, "#<???>"),
                 Some(name) => write!(f, "#{}", name),
             },
+            Value::Bridge => write!(f, "<bridge>"),
             Value::Boolean(b) => write!(f, "#{}", if *b { "True" } else { "False" }),
             Value::Function(_) => write!(f, "<function>"),
             Value::List(items) => {
@@ -304,7 +352,10 @@ impl<'a> Display for PrintableValue<'a> {
                 }
                 write!(f, ")")
             }
-            Value::NativeCall(_) => write!(f, "<native-call>"),
+            Value::NativeFunction(func) => match self.0.strings.resolve(func.sym.0) {
+                None => write!(f, "<native-function <???>"),
+                Some(name) => write!(f, "<native-function {}>", name),
+            },
             Value::Number(n) => write!(f, "{}", n),
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Table(table) => {
@@ -365,9 +416,15 @@ impl MetaTable {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeCallType {
+    Default,
+    Macro,
+}
+
 pub type Call = fn(&Interpreter, &mut State, &[Value]) -> Result<Value, Error>;
 pub struct Backend {
-    builtins: HashMap<&'static str, Call>,
+    builtins: HashMap<&'static str, (NativeCallType, Call)>,
 }
 
 impl Backend {
@@ -377,8 +434,8 @@ impl Backend {
         }
     }
 
-    pub fn insert(&mut self, name: &'static str, call: Call) {
-        self.builtins.insert(name, call);
+    pub fn register(&mut self, name: &'static str, call_type: NativeCallType, call: Call) {
+        self.builtins.insert(name, (call_type, call));
     }
 
     fn try_call(
@@ -387,20 +444,17 @@ impl Backend {
         state: &mut State,
         sym: Symbol,
         args: &[Value],
-        call_type: NativeCallType,
     ) -> Result<Value, Error> {
         match state.strings.resolve(sym.0) {
             None => Err(Error::no_such_string()),
             Some(name) => match self.builtins.get(&name[1..]) {
                 None => Err(Error::unknown_native_call(name)),
-                Some(call) => {
-                    let args = match call_type {
-                        NativeCallType::Macro => args.to_vec(),
-                        NativeCallType::Call => args
-                            .iter()
-                            .map(|arg| interpreter.evaluate(state, arg))
-                            .collect::<Result<Vec<Value>, Error>>()?,
-                    };
+                Some((NativeCallType::Macro, call)) => call(interpreter, state, &args),
+                Some((NativeCallType::Default, call)) => {
+                    let args = args
+                        .iter()
+                        .map(|arg| interpreter.evaluate(state, arg))
+                        .collect::<Result<Vec<Value>, Error>>()?;
 
                     call(interpreter, state, &args)
                 }
@@ -440,13 +494,14 @@ impl Interpreter {
             | Value::Symbol(_)
             | Value::Table(_)
             | Value::Vector(_)
-            | Value::NativeCall(_)
+            | Value::NativeFunction(_)
+            | Value::Bridge
             | Value::Unbound => Ok(value.clone()),
             Value::Identifier(id) => state.try_resolve(id).map(|v| v.clone()),
             Value::PseudoValue(PseudoValue(val)) => match state.strings.resolve(*val) {
                 None => Err(Error::no_such_string()),
-                Some("Call") => Ok(Value::NativeCall(NativeCallType::Call)),
-                Some("CallMacro") => Ok(Value::NativeCall(NativeCallType::Macro)),
+                Some("Bridge") => Ok(Value::Bridge),
+                Some("ArgRest") => Ok(state.arg_rest().unwrap_or_else(|| Value::empty())),
                 Some("Env") => Ok(Value::Table(state.environment.clone())),
                 Some("Nil") => Ok(Value::Unbound),
                 Some("True") => Ok(Value::Boolean(true)),
@@ -456,30 +511,24 @@ impl Interpreter {
             Value::List(items) => match items.split_first() {
                 None => Ok(Value::empty()),
                 Some((first, args)) => self.evaluate(state, first).and_then(|callee| match &callee {
-                    Value::NativeCall(call_type) => match args {
-                        [] => Err(Error::invalid_native_call(
-                            "<no name>",
-                            "Expected at least one argument",
-                        )),
-                        [Value::Symbol(sym), args @ ..] => self.backend.try_call(self, state, *sym, args, *call_type),
-                        _ => Err(Error::invalid_native_call("<bad name>", "Expected symbol")),
+                    Value::NativeFunction(_) => self.try_call(state, &callee, args),
+                    Value::Bridge => match args {
+                        [Value::Symbol(sym)] => Ok(Value::NativeFunction(NativeFunction { sym: *sym })),
+                        _ => Err(Error::invalid_bridge_call("<???>", "Bad format")),
                     },
-                    Value::Function(func) => {
-                        let evaluated_args = match func.is_macro {
-                            true => args.to_vec(),
-                            false => args
-                                .iter()
-                                .map(|arg| self.evaluate(state, arg))
-                                .collect::<Result<Vec<Value>, Error>>()?,
-                        };
-
-                        let mut scope_state = state.closing(&func, evaluated_args);
-                        self.evaluate(&mut scope_state, &func.body)
-                    }
+                    Value::Function(_) => self.try_call(state, &callee, args),
                     Value::Table(_table) => todo!(),
                     _ => Err(Error::value_not_callable(PrintableValue(state, &callee))),
                 }),
             },
+        }
+    }
+
+    pub fn try_call(&self, state: &mut State, callee: &Value, args: &[Value]) -> Result<Value, Error> {
+        match callee {
+            Value::Function(f) => f.call(self, state, args),
+            Value::NativeFunction(f) => f.call(self, state, args),
+            _ => return Err(Error::value_not_callable(PrintableValue(state, callee))),
         }
     }
 }
@@ -508,8 +557,7 @@ impl Runtime {
 
         runtime.load_module(&modules::core::Core).unwrap();
         runtime.load_module(&modules::math::Math).unwrap();
-        runtime.load_module(&modules::lists::Lists).unwrap();
-        runtime.load_module(&modules::tables::Tables).unwrap();
+        runtime.load_module(&modules::collections::Collections).unwrap();
 
         runtime
     }
@@ -584,10 +632,7 @@ mod test {
         assert_eq!(runtime.evaluate_expr("#True"), Ok(Value::Boolean(true)));
         assert_eq!(runtime.evaluate_expr("#False"), Ok(Value::Boolean(false)));
         assert_eq!(runtime.evaluate_expr("#Yo"), Err(Error::unknown_pseudo_value("Yo")));
-        assert_eq!(
-            runtime.evaluate_expr("#Call"),
-            Ok(Value::NativeCall(NativeCallType::Call))
-        );
+        assert_eq!(runtime.evaluate_expr("#Bridge"), Ok(Value::Bridge));
         assert_eq!(
             runtime.evaluate_expr("[1 () [2]]"),
             Ok(Value::Vector(vec![
