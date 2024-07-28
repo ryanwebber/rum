@@ -1,29 +1,14 @@
 use crate::types::Numeric;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Expr<'input> {
-    Identifier(&'input str),
-    List(Vec<Expr<'input>>),
-    Map(Vec<(Expr<'input>, Expr<'input>)>),
+pub enum Expr {
+    Identifier(String),
+    List(Vec<Expr>),
+    Map(Vec<(Expr, Expr)>),
     Number(Numeric),
-    Path(Vec<&'input str>),
-    Placeholder(MatchSize),
-    PseudoValue(&'input str),
-    String(&'input str),
-    Symbol(&'input str),
-    Vector(Vec<Expr<'input>>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum MatchSize {
-    ZeroOrMore,
-    One,
-}
-
-pub mod builtin {
-    use super::*;
-
-    pub fn quote<'input>(expr: Expr<'input>) -> Expr<'input> {
-        Expr::List(vec![Expr::Identifier("quote!"), expr])
-    }
+    PseudoValue(String),
+    Quoted(Box<Expr>),
+    String(String),
+    Symbol(String),
+    Vector(Vec<Expr>),
 }

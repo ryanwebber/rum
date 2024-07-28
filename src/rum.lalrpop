@@ -14,29 +14,16 @@ extern {
 
 pub Exprs = Expr*;
 
-pub Expr: ast::Expr<'input> = {
-    Path => ast::Expr::Path(<>),
+pub Expr: ast::Expr = {
     Num => ast::Expr::Number(<>),
-    ID => ast::Expr::Identifier(<>),
-    Symbol => ast::Expr::Symbol(<>),
-    String => ast::Expr::String(<>),
-    PseudoValue => ast::Expr::PseudoValue(<>),
-    "_" => ast::Expr::Placeholder(ast::MatchSize::One),
-    "..." => ast::Expr::Placeholder(ast::MatchSize::ZeroOrMore),
-    "'" <Expr> => ast::builtin::quote(<>),
+    ID => ast::Expr::Identifier(String::from(<>)),
+    Symbol => ast::Expr::Symbol(String::from(<>)),
+    String => ast::Expr::String(String::from(<>)),
+    PseudoValue => ast::Expr::PseudoValue(String::from(<>)),
+    "'" <Expr> => ast::Expr::Quoted(Box::new(<>)),
     "(" <Expr*> ")" => ast::Expr::List(<>),
     "[" <Expr*> "]" => ast::Expr::Vector(<>),
     "{" <(<Expr> "=>" <Expr>)*> "}" => ast::Expr::Map(<>),
-};
-
-Path: Vec<&'input str> = {
-    "`" <mut v:(<IdentifierLiteral> "/")*> <e:IdentifierLiteral?> "`" => match e {
-        None => v,
-        Some(e) => {
-            v.push(e);
-            v
-        }
-    }
 };
 
 Num: Numeric = {
@@ -85,7 +72,7 @@ match {
     r"#[A-Za-z_]*" => PseudoValueLiteral,
 } else {
     r"[\w|\$](\w|-|:|\.)*\??!?" => IdentifierLiteral,
-    r":[\w_\$]+" => Symbol,
+    r":[\w_\$\.-]+" => Symbol,
 } else {
     // Ignore whitespace and comments
     r"\s*" => { },

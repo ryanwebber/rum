@@ -1,7 +1,5 @@
 use std::io::{self, BufRead, Write};
 
-use interpreter::{NativeCallType, Value};
-
 mod ast;
 mod gc;
 mod interner;
@@ -10,9 +8,7 @@ mod parser;
 mod types;
 
 mod modules {
-    pub(crate) mod collections;
-    pub(crate) mod core;
-    pub(crate) mod math;
+    pub mod core;
 }
 
 extern crate lalrpop_util;
@@ -30,20 +26,15 @@ fn print_banner() {
 
 impl interpreter::Module for ReplModule {
     fn register_builtins(&self, backend: &mut interpreter::Backend) {
-        backend.register("repl$exit", NativeCallType::Default, |_, _, _| {
-            std::process::exit(0);
-        });
+        backend.register("repl.exit", |_, _, _| todo!());
 
-        backend.register("repl$help", NativeCallType::Default, |_, _, _| {
-            print_banner();
-            return Ok(Value::empty());
-        });
+        backend.register("repl.help", |_, _, _| todo!());
     }
 
     fn prelude() -> &'static str {
         r#"
-        (def-fn! exit () (#Call :repl$exit))
-        (def-fn! help () (#Call :repl$help))
+        (def-fn! exit () (call-native :repl.exit))
+        (def-fn! help () (call-native :repl.help))
         "#
     }
 }
@@ -61,7 +52,7 @@ fn main() {
             print!("> ");
             _ = io::stdout().flush();
             stdin.lock().read_line(&mut line).unwrap();
-            match runtime.evaluate_expr(line.trim_end()) {
+            match runtime.parse_and_evaluate_expr(line.trim_end()) {
                 Ok(value) => println!("{}", runtime.print_value(&value)),
                 Err(e) => println!("! {}", e),
             }

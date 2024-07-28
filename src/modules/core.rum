@@ -2,21 +2,8 @@
 ; Core Module Prelude
 ;
 
-((#Bridge :__core$def_fn)
-    ((#Bridge :__core$quote) def-fn!)
-    ((#Bridge :__core$quote) (name args body))
-    ((#Bridge :__core$quote) ((#Bridge :__core$def_fn) name args body)))
+(#bridge :core.def-fn
+    '(def-fn! (name args body)
+        (#bridge :core.def-fn name args body)))
 
-(def-fn! apply (f args) ((#Bridge :__core$apply) f args))
-
-; quote
-(def-fn! quote! (a) a)
-
-; evaluate
-(def-fn! eval (expr) ((#Bridge :__core$evaluate) expr))
-
-; with
-(def-fn! with! (bindings body) ((#Bridge :__core$with) bindings body))
-
-; do
-(def-fn! do () ((#Bridge :__core$do) #ArgRest))
+(def-fn! identity (a) a)
