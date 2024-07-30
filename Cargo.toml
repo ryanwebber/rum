@@ -8,4 +8,5 @@ build = "build.rs"
 lalrpop = "0.20.0"
 
 [dependencies]
+indoc = "2.0.5"
 lalrpop-util = { version = "0.20.0", features = ["lexer", "unicode"] }

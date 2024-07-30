@@ -1,5 +1,8 @@
 use std::io::{self, BufRead, Write};
 
+use indoc::indoc;
+use interpreter::NativeCall;
+
 mod ast;
 mod gc;
 mod interner;
@@ -8,7 +11,10 @@ mod parser;
 mod types;
 
 mod modules {
+    pub mod collections;
     pub mod core;
+    pub mod math;
+    pub mod reflection;
 }
 
 extern crate lalrpop_util;
@@ -16,26 +22,39 @@ extern crate lalrpop_util;
 struct ReplModule;
 
 fn print_banner() {
-    println!(";");
-    println!("; Rum v0.1.0 REPL");
-    println!("; Available functions:");
-    println!(";   (exit)    Exit the REPL");
-    println!(";   (help)    Print additional help information");
-    println!(";");
+    println!(indoc::indoc! {"
+        ;
+        ; Rum v0.1.0 REPL
+        ; Available functions:
+        ;   (exit)    Exit the REPL
+        ;   (help)    Print additional help information
+        ;
+    "});
 }
 
 impl interpreter::Module for ReplModule {
     fn register_builtins(&self, backend: &mut interpreter::Backend) {
-        backend.register("repl.exit", |_, _, _| todo!());
+        backend.register(
+            "repl.exit",
+            NativeCall::Function(|_, _, _| {
+                std::process::exit(0);
+            }),
+        );
 
-        backend.register("repl.help", |_, _, _| todo!());
+        backend.register(
+            "repl.help",
+            NativeCall::Function(|_, _, _| {
+                print_banner();
+                Ok(interpreter::Value::empty())
+            }),
+        );
     }
 
     fn prelude() -> &'static str {
-        r#"
-        (def-fn! exit () (call-native :repl.exit))
-        (def-fn! help () (call-native :repl.help))
-        "#
+        indoc! {"
+            (def-fn! exit () (#bridge :repl.exit))
+            (def-fn! help () (#bridge :repl.help))
+        "}
     }
 }
 

@@ -1,0 +1,5 @@
+;
+; Math Module Prelude
+;
+
+(def-fn! + (a b) (#bridge :math.addition a b))

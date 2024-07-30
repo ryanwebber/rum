@@ -2,8 +2,7 @@
 ; Core Module Prelude
 ;
 
-(#bridge :core.def-fn
-    '(def-fn! (name args body)
-        (#bridge :core.def-fn name args body)))
+(#bridge :core.def-macro
+    ('def-macro! '(name args body) '(#bridge :core.def-macro (name args body))))
 
-(def-fn! identity (a) a)
+(def-macro! def-fn! (name args body) (#bridge :core.def-fn (name args body)))

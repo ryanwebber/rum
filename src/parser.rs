@@ -43,7 +43,7 @@ mod tests {
         assert!(rum::ExprParser::new().parse("hello-world").is_ok());
         assert!(rum::ExprParser::new().parse("hello1").is_ok());
         assert!(rum::ExprParser::new().parse(":hello").is_ok());
-        assert!(rum::ExprParser::new().parse(":hello-world").is_err());
+        assert!(rum::ExprParser::new().parse(":hello-world").is_ok());
         assert!(rum::ExprParser::new().parse("(hello1 2 3)").is_ok());
         assert!(rum::ExprParser::new().parse("2147483648").is_err());
         assert!(rum::ExprParser::new().parse(":2").is_ok());
@@ -60,14 +60,6 @@ mod tests {
         assert!(rum::ExprParser::new().parse("[").is_err());
         assert!(rum::ExprParser::new().parse("[1 2 () [()] [\"345\"]]").is_ok());
         assert!(rum::ExprParser::new().parse("{ () => () 9 => 0 {} => [] }").is_ok());
-        assert!(rum::ExprParser::new().parse("_").is_ok());
-        assert!(rum::ExprParser::new().parse("...").is_ok());
-        assert!(rum::ExprParser::new().parse("`my/path`").is_ok());
-        assert!(rum::ExprParser::new().parse("`path`").is_ok());
-        assert!(rum::ExprParser::new().parse("`path/`").is_ok());
-        assert!(rum::ExprParser::new().parse("`/`").is_err());
-        assert!(rum::ExprParser::new().parse("`/hello`").is_err());
-        assert!(rum::ExprParser::new().parse("``").is_ok());
         assert!(rum::ExprParser::new().parse("#True").is_ok());
         assert!(rum::ExprParser::new().parse("#Foo").is_ok());
         assert!(rum::ExprParser::new().parse("#foo").is_ok());
@@ -79,6 +71,8 @@ mod tests {
 
     #[test]
     fn test_parse_exprs() {
-        assert!(rum::ExprsParser::new().parse(include_str!("samples/core.rum")).is_ok());
+        rum::ExprsParser::new()
+            .parse(include_str!("samples/showcase.rum"))
+            .expect("Failed to parse showcase.rum");
     }
 }

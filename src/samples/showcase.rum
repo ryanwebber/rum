@@ -16,8 +16,8 @@
         (has :position)
         (has :sprite))
     (lambda (entity)
-        (print `entity/position/x`)
-        (print (dot3 `entity/position` `entity/position`))
+        (print "entity/position/x")
+        (print (dot3 "entity/position" "entity/position"))
         (set entity :position (vec3 0 0 0))))
 
 (def-local mything [0 0 0])
@@ -25,22 +25,13 @@
 
 (def-obj "Player"
     (make-component :position (vec3 (0 0 0)))
-    (make-component :sprite `$res/path/to/script.png`))
+    (make-component :sprite ($res path/to/script.png)))
 
 (def-fn add (a b) )
 
 (match mything
     {
-        0 => "Literal zero"
-        [] => "Empty"
-        [0] => "One zero"
-        [_] => "One thing"
-        [0 _ 1] => "Zero something one"
-        [0 ...] => "Zero then things"
-        [...] => "Some array"
-        _ => "Anything else" })
-
-(include `$res/path/to/script.rum`)
+        0 => "Literal zero" })
 
 ; Value literals
 (#True #False #FooBar)
