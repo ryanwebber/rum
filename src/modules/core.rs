@@ -81,6 +81,114 @@ impl Module for Core {
             "core.def-fn",
             NativeCall::Macro(|interpreter, state, args| def_fn_impl(interpreter, state, args, None)),
         );
+
+        backend.register(
+            "core.call",
+            NativeCall::Function(|interpreter, state, args| match args {
+                [callee, Value::Vector(args)] => interpreter.call_as_function(state, &callee, &args),
+                _ => Err(Error::invalid_bridge_call("core.call", "Expected (callee [args...])")),
+            }),
+        );
+
+        backend.register(
+            "core.get",
+            NativeCall::Function(|_, _, args| match args {
+                [Value::Table(table), key] => Ok(table.borrow().get(key).cloned().unwrap_or_else(|| Value::empty())),
+                _ => Err(Error::invalid_bridge_call(
+                    "core.get",
+                    &format!("Expected (table|vec key), but got: {:?}", args),
+                )),
+            }),
+        );
+
+        backend.register(
+            "core.set",
+            NativeCall::Function(|_, _, args| match args {
+                [Value::Table(table), key, value] => {
+                    table.borrow_mut().insert(key.clone(), value.clone());
+                    Ok(Value::empty())
+                }
+                _ => Err(Error::invalid_bridge_call(
+                    "core.set",
+                    &format!("Expected (table|vec key value), but got: {:?}", args),
+                )),
+            }),
+        );
+
+        backend.register(
+            "core.last",
+            NativeCall::Function(|_, _, args| match args {
+                [Value::Vector(vec)] => Ok(vec.last().cloned().unwrap_or_else(|| Value::empty())),
+                _ => Err(Error::invalid_bridge_call("core.last", "Expected (vec), but got: {:?}")),
+            }),
+        );
+
+        backend.register(
+            "core.match",
+            NativeCall::Macro(|interpreter, state, args| match args {
+                [Expr::Identifier(lhs_id), Expr::Identifier(patterns_id)] => {
+                    let lhs = interpreter.evaluate(state, Expr::Identifier(lhs_id.clone()))?;
+                    let patterns = interpreter.evaluate(state, Expr::Identifier(patterns_id.clone()))?;
+                    match (lhs, patterns) {
+                        (Value::Expr(lhs), Value::Expr(Expr::Map(patterns))) => {
+                            let lhs = interpreter.evaluate(state, lhs.clone())?;
+                            for (pattern, body) in patterns.iter() {
+                                match pattern {
+                                    Expr::Number(..) | Expr::String(..) | Expr::Symbol(..) => {
+                                        if lhs == interpreter.evaluate(state, pattern.clone())? {
+                                            return interpreter.evaluate(state, body.clone());
+                                        }
+                                    }
+                                    Expr::Identifier(..) => {
+                                        let pattern = interpreter.evaluate(state, pattern.clone())?;
+                                        if lhs == pattern {
+                                            return interpreter.evaluate(state, body.clone());
+                                        }
+                                    }
+                                    _ => todo!(),
+                                }
+                            }
+
+                            Err(Error::no_matching_pattern(lhs.display(state), &patterns))
+                        }
+                        _ => Err(Error::invalid_bridge_call(
+                            "core.match",
+                            &format!("Expected (expr table), but got: {:?}", args),
+                        )),
+                    }
+                }
+                _ => unreachable!("core.match: Expected (lhs patterns)"),
+            }),
+        );
+
+        backend.register(
+            "core.let",
+            NativeCall::Macro(|interpreter, state, args| match args {
+                [Expr::Identifier(assignments_id), Expr::Identifier(expr_id)] => {
+                    let assignments = interpreter.evaluate(state, Expr::Identifier(assignments_id.clone()))?;
+                    let expr = interpreter.evaluate(state, Expr::Identifier(expr_id.clone()))?;
+                    match (assignments, expr) {
+                        (Value::Expr(Expr::Map(assignments)), Value::Expr(lhs)) => {
+                            for (lhs, expr) in assignments.iter() {
+                                if let Expr::Identifier(id) = lhs {
+                                    let value = interpreter.evaluate(state, expr.clone())?;
+                                    let symbol = Symbol::resolve(id, state);
+                                    state.current_scope_mut().set_local(symbol, value);
+                                }
+                            }
+
+                            // TODO: Should we pop these bindings?
+                            interpreter.evaluate(state, lhs)
+                        }
+                        _ => Err(Error::invalid_bridge_call(
+                            "core.match",
+                            &format!("Expected (expr table), but got: {:?}", args),
+                        )),
+                    }
+                }
+                _ => unreachable!("core.match: Expected (lhs patterns)"),
+            }),
+        );
     }
 
     fn prelude() -> &'static str {
@@ -107,11 +215,60 @@ mod tests {
     }
 
     #[test]
-    fn test_symbol_to_string() {
+    fn test_call() {
         let mut runtime = interpreter::Runtime::new();
         assert_eq!(
-            runtime.parse_and_evaluate_expr("(symbol->string :hello)"),
-            Ok(Value::String(":hello".to_string()))
+            runtime.parse_and_evaluate_expr(indoc::indoc! {"
+                (call + [1 2])
+            "}),
+            Ok(Value::Number(3))
+        );
+    }
+
+    #[test]
+    fn test_last() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {"
+                (last [1 2 3])
+            "}),
+            Ok(Value::Number(3))
+        );
+    }
+
+    #[test]
+    fn test_match() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {r#"
+                (match! 2 {
+                    1 => undefined-identifier
+                    2 => "two"
+                })
+            "#}),
+            Ok(Value::String(String::from("two")))
+        );
+    }
+
+    #[test]
+    fn test_let() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {r#"
+                (let! { x => 2 } x)
+            "#}),
+            Ok(Value::Number(2))
+        );
+    }
+
+    #[test]
+    fn test_do() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {r#"
+                (do 1 2 3 4)
+            "#}),
+            Ok(Value::Number(4))
         );
     }
 }

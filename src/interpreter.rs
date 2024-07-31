@@ -11,6 +11,7 @@ pub enum ErrorType {
     InconsistentState,
     InvalidBridgeCall,
     InvalidParse,
+    NoMatchingPattern,
     UnboundIdentifier,
     UnknownNativeCall,
     UnknownPseudoValue,
@@ -41,6 +42,13 @@ impl Error {
         Error {
             error_type: ErrorType::InvalidParse,
             message: format!("Invalid parse: {:?}", error),
+        }
+    }
+
+    pub fn no_matching_pattern(value: PrintableValue<'_>, _: &[(Expr, Expr)]) -> Error {
+        Error {
+            error_type: ErrorType::NoMatchingPattern,
+            message: format!("No matching pattern for: {}", value),
         }
     }
 
@@ -109,6 +117,7 @@ impl Display for Error {
                 ErrorType::InconsistentState => "InconsistentState",
                 ErrorType::InvalidBridgeCall => "InvalidBridgeCall",
                 ErrorType::InvalidParse => "InvalidParse",
+                ErrorType::NoMatchingPattern => "NoMatchingPattern",
                 ErrorType::UnboundIdentifier => "UnboundIdentifier",
                 ErrorType::UnknownNativeCall => "UnknownNativeCall",
                 ErrorType::UnknownPseudoValue => "UnknownPseudoValue",
@@ -126,6 +135,7 @@ pub enum Value {
     Bridge,
     Expr(Expr),
     List(Vec<Expr>),
+    NativeFunction(NativeFunction),
     Number(Numeric),
     String(String),
     Symbol(Symbol),
@@ -140,19 +150,6 @@ impl Value {
 
     pub fn display<'a>(&'a self, state: &'a State) -> PrintableValue<'a> {
         PrintableValue(state, self)
-    }
-
-    pub fn typename(&self) -> &'static str {
-        match self {
-            Value::Bridge => "bridge",
-            Value::Expr(_) => "expr",
-            Value::List(_) => "list",
-            Value::Number(_) => "number",
-            Value::String(_) => "string",
-            Value::Symbol(_) => "symbol",
-            Value::Table(_) => "table",
-            Value::Vector(_) => "vector",
-        }
     }
 }
 
@@ -170,6 +167,7 @@ impl<'a> Display for PrintableValue<'a> {
                 }
                 write!(f, ")")
             }
+            Value::NativeFunction(sym) => write!(f, "<{}>", self.0.get_string(&sym.0).unwrap_or("??")),
             Value::Number(n) => write!(f, "{}", n),
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Symbol(sym) => match sym {
@@ -202,6 +200,18 @@ impl<'a> Display for PrintableValue<'a> {
     }
 }
 
+trait Callable {
+    fn call_as_function(&self, interpreter: &Interpreter, state: &mut State, args: &[Value]) -> Result<Value, Error>;
+    fn call_as_macro(&self, interpreter: &Interpreter, state: &mut State, args: &[Expr]) -> Result<Value, Error> {
+        let args = args
+            .iter()
+            .map(|expr| interpreter.evaluate(state, expr.clone()))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.call_as_function(interpreter, state, &args)
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Symbol {
     Shared(usize),
@@ -222,14 +232,16 @@ impl Symbol {
 pub struct StaticSymbol(&'static str);
 
 impl StaticSymbol {
-    pub const FN_BODY: StaticSymbol = StaticSymbol("fn.body");
-    pub const FN_NAME: StaticSymbol = StaticSymbol("fn.name");
-    pub const FN_PARAMETERS: StaticSymbol = StaticSymbol("fn.parameters");
-    pub const FN_TYPE: StaticSymbol = StaticSymbol("fn.type");
-    pub const LOCALS: StaticSymbol = StaticSymbol("locals");
-    pub const MACRO: StaticSymbol = StaticSymbol("macro");
+    pub const ARGS: StaticSymbol = StaticSymbol(":args");
+    pub const FN_BODY: StaticSymbol = StaticSymbol(":fn.body");
+    pub const FN_NAME: StaticSymbol = StaticSymbol(":fn.name");
+    pub const FN_PARAMETERS: StaticSymbol = StaticSymbol(":fn.parameters");
+    pub const FN_TYPE: StaticSymbol = StaticSymbol(":fn.type");
+    pub const LOCALS: StaticSymbol = StaticSymbol(":locals");
+    pub const MACRO: StaticSymbol = StaticSymbol(":macro");
 
     const ALL: &'static [StaticSymbol] = &[
+        StaticSymbol::ARGS,
         StaticSymbol::FN_BODY,
         StaticSymbol::FN_NAME,
         StaticSymbol::FN_PARAMETERS,
@@ -240,6 +252,45 @@ impl StaticSymbol {
 
     fn as_static_symbol(sym: &str) -> Option<Self> {
         Self::ALL.iter().find(|ss| ss.0 == sym).copied()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NativeFunction(Symbol);
+
+impl Callable for NativeFunction {
+    fn call_as_macro(&self, interpreter: &Interpreter, state: &mut State, args: &[Expr]) -> Result<Value, Error> {
+        match interpreter.backend.get(self.0, state) {
+            Some(NativeCall::Macro(native_impl)) => native_impl(interpreter, state, args),
+            Some(NativeCall::Function(impl_)) => {
+                let args = args
+                    .iter()
+                    .map(|expr| interpreter.evaluate(state, expr.clone()))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                state.with_new_stack_frame(std::iter::empty(), |state| {
+                    // Note: native fns don't have named parameters
+                    impl_(interpreter, state, &args)
+                })
+            }
+            None => Err(Error::unknown_native_call(state.get_string(&self.0).unwrap_or("??"))),
+        }
+    }
+
+    fn call_as_function(&self, interpreter: &Interpreter, state: &mut State, args: &[Value]) -> Result<Value, Error> {
+        match interpreter.backend.get(self.0, state) {
+            Some(NativeCall::Function(impl_)) => {
+                state.with_new_stack_frame(std::iter::empty(), |state| {
+                    // Note: native fns don't have named parameters
+                    impl_(interpreter, state, args)
+                })
+            }
+            Some(NativeCall::Macro(_)) => {
+                let name = state.get_string(&self.0).unwrap_or("??");
+                Err(Error::invalid_bridge_call(name, "Macros cannot be called as functions"))
+            }
+            None => Err(Error::unknown_native_call(state.get_string(&self.0).unwrap_or("??"))),
+        }
     }
 }
 
@@ -269,6 +320,92 @@ impl Table {
 
     pub fn iter(&self) -> impl Iterator<Item = (&Value, &Value)> {
         self.0.iter()
+    }
+}
+
+impl Callable for Table {
+    fn call_as_macro(&self, interpreter: &Interpreter, state: &mut State, args: &[Expr]) -> Result<Value, Error> {
+        let fn_kind = self.get(&Value::Symbol(Symbol::Static(StaticSymbol::FN_TYPE)));
+        if fn_kind != Some(&Value::Symbol(Symbol::Static(StaticSymbol::MACRO))) {
+            let args = args
+                .iter()
+                .map(|expr| interpreter.evaluate(state, expr.clone()))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            return Self::call_as_function(&self, interpreter, state, &args);
+        }
+
+        let Some(Value::Expr(body)) = self.get(&Value::Symbol(Symbol::Static(StaticSymbol::FN_BODY))) else {
+            return Err(Error::table_not_callable());
+        };
+
+        let parameters: Vec<(Value, Option<Symbol>)> = {
+            let parameter_names = match self.get(&Value::Symbol(Symbol::Static(StaticSymbol::FN_PARAMETERS))) {
+                Some(Value::Expr(Expr::List(parameters))) => parameters.clone(),
+                _ => vec![],
+            };
+
+            let mut parameters = Vec::with_capacity(args.len());
+            for (i, arg) in args.iter().enumerate() {
+                let binding = match parameter_names.get(i) {
+                    Some(Expr::Identifier(name)) => Some(Symbol::resolve(&name, state)),
+                    _ => None,
+                };
+
+                parameters.push((Value::Expr(arg.clone()), binding));
+            }
+
+            parameters
+        };
+
+        state.with_new_stack_frame(parameters.into_iter(), |state| {
+            // Evaluate the body of the function with the new stack frame
+            interpreter.evaluate(state, body.clone())
+        })
+    }
+
+    fn call_as_function(&self, interpreter: &Interpreter, state: &mut State, args: &[Value]) -> Result<Value, Error> {
+        let Some(Value::Expr(body)) = self.get(&Value::Symbol(Symbol::Static(StaticSymbol::FN_BODY))) else {
+            return Err(Error::table_not_callable());
+        };
+
+        let parameters: Vec<(Value, Option<Symbol>)> = {
+            let parameter_names = match self.get(&Value::Symbol(Symbol::Static(StaticSymbol::FN_PARAMETERS))) {
+                Some(Value::Expr(Expr::List(parameters))) => parameters.clone(),
+                _ => vec![],
+            };
+
+            let mut parameters = Vec::with_capacity(args.len());
+            for (i, arg) in args.iter().enumerate() {
+                let binding = match parameter_names.get(i) {
+                    Some(Expr::Identifier(name)) => Some(Symbol::resolve(&name, state)),
+                    _ => None,
+                };
+
+                parameters.push((arg.clone(), binding));
+            }
+
+            parameters
+        };
+
+        state.with_new_stack_frame(parameters.into_iter(), |state| {
+            // Evaluate the body of the function with the new stack frame
+            interpreter.evaluate(state, body.clone())
+        })
+    }
+}
+
+struct Bridge;
+
+impl Callable for Bridge {
+    fn call_as_function(&self, _: &Interpreter, _: &mut State, args: &[Value]) -> Result<Value, Error> {
+        match args {
+            [Value::Symbol(sym)] => Ok(Value::NativeFunction(NativeFunction(*sym))),
+            _ => Err(Error::invalid_bridge_call(
+                "bridge",
+                &format!("Expected <SYMBOL>, got: {:?}", args),
+            )),
+        }
     }
 }
 
@@ -389,13 +526,23 @@ impl State {
 
     pub fn with_new_stack_frame(
         &mut self,
-        args: impl Iterator<Item = (Symbol, Value)>,
+        args: impl Iterator<Item = (Value, Option<Symbol>)>,
         f: impl FnOnce(&mut Self) -> Result<Value, Error>,
     ) -> Result<Value, Error> {
         let mut scope = Scope::new();
-        for (id, value) in args {
-            scope.set_local(id, value);
+        let mut argvec = vec![];
+        for (value, id) in args {
+            if let Some(id) = id {
+                scope.set_local(id, value.clone());
+            }
+
+            argvec.push(value);
         }
+
+        scope.metatable.borrow_mut().0.insert(
+            Value::Symbol(Symbol::Static(StaticSymbol::ARGS)),
+            self.create_vector(argvec),
+        );
 
         self.callstack.push(scope);
         let result = f(self);
@@ -418,14 +565,14 @@ impl Interpreter {
     pub fn evaluate(&self, state: &mut State, expr: Expr) -> Result<Value, Error> {
         match expr {
             Expr::Identifier(id) => {
-                let sym = Symbol::resolve(&id, state);
+                let sym: Symbol = Symbol::resolve(&id, state);
                 state.resolve(sym).ok_or_else(|| Error::unbound_identifier(&id))
             }
             Expr::List(exprs) => match exprs.split_first() {
                 None => Ok(state.create_empty()),
                 Some((first, args)) => {
                     let callee = self.evaluate(state, first.clone())?;
-                    self.try_call(state, &callee, args)
+                    self.call_as_macro(state, &callee, args)
                 }
             },
             Expr::Number(n) => Ok(Value::Number(n)),
@@ -438,6 +585,16 @@ impl Interpreter {
             Expr::Quoted(expr) => Ok(Value::Expr(*expr)),
             Expr::String(s) => Ok(Value::String(s)),
             Expr::Symbol(sym) => Ok(Value::Symbol(Symbol::resolve(&sym, state))),
+            Expr::Map(pairs) => {
+                let mut table = Table::new();
+                for (key, value) in pairs {
+                    let key = self.evaluate(state, key)?;
+                    let value = self.evaluate(state, value)?;
+                    table.insert(key, value);
+                }
+
+                Ok(Value::Table(Gc::new(table)))
+            }
             Expr::Vector(exprs) => {
                 let values = exprs
                     .into_iter()
@@ -446,64 +603,23 @@ impl Interpreter {
 
                 Ok(Value::Vector(values))
             }
-            _ => todo!("Convert {:?} to Value", expr),
         }
     }
 
-    pub fn try_call(&self, state: &mut State, callee: &Value, args: &[Expr]) -> Result<Value, Error> {
+    pub fn call_as_macro(&self, state: &mut State, callee: &Value, args: &[Expr]) -> Result<Value, Error> {
         match callee {
-            Value::Bridge => match args {
-                [Expr::Symbol(sym), args @ ..] => {
-                    let sym = Symbol::resolve(&sym, state);
-                    self.backend.try_native_call(self, state, sym, args)
-                }
-                _ => Err(Error::invalid_bridge_call(
-                    "bridge",
-                    &format!(
-                        "Expected (<SYMBOL> ...), got: {}",
-                        Value::List(args.to_vec()).display(state)
-                    ),
-                )),
-            },
-            Value::Table(table) => {
-                let table = &mut table.borrow_mut().0;
-                let Some(Value::Expr(body)) = table.get(&Value::Symbol(Symbol::Static(StaticSymbol::FN_BODY))) else {
-                    return Err(Error::table_not_callable());
-                };
+            Value::Bridge => Bridge.call_as_macro(self, state, args),
+            Value::NativeFunction(native_function) => native_function.call_as_macro(self, state, args),
+            Value::Table(table) => table.borrow().call_as_macro(self, state, args),
+            _ => Err(Error::value_not_callable(callee.display(state))),
+        }
+    }
 
-                let is_macro = match table.get(&Value::Symbol(Symbol::Static(StaticSymbol::FN_TYPE))) {
-                    Some(Value::Symbol(sym)) => *sym == Symbol::Static(StaticSymbol::MACRO),
-                    _ => false,
-                };
-
-                let parameters: Vec<(Symbol, Value)> = {
-                    let parameter_names = match table.get(&Value::Symbol(Symbol::Static(StaticSymbol::FN_PARAMETERS))) {
-                        Some(Value::Expr(Expr::List(parameters))) => parameters.clone(),
-                        _ => vec![],
-                    };
-
-                    std::iter::zip(parameter_names.iter(), args.iter())
-                        .map(|(name, expr)| {
-                            let Expr::Identifier(name) = name else {
-                                return Err(Error::table_not_callable());
-                            };
-
-                            let value = if is_macro {
-                                state.create_expr(expr.clone())
-                            } else {
-                                self.evaluate(state, expr.clone())?
-                            };
-
-                            Ok((Symbol::resolve(&name, state), value))
-                        })
-                        .collect::<Result<_, _>>()?
-                };
-
-                state.with_new_stack_frame(parameters.into_iter(), |state| {
-                    // Evaluate the body of the function with the new stack frame
-                    self.evaluate(state, body.clone())
-                })
-            }
+    pub fn call_as_function(&self, state: &mut State, callee: &Value, args: &[Value]) -> Result<Value, Error> {
+        match callee {
+            Value::Bridge => Bridge.call_as_function(self, state, args),
+            Value::NativeFunction(native_function) => native_function.call_as_function(self, state, args),
+            Value::Table(table) => table.borrow().call_as_function(self, state, args),
             _ => Err(Error::value_not_callable(callee.display(state))),
         }
     }
@@ -532,33 +648,13 @@ impl Backend {
         self.builtins.insert(name, implementation);
     }
 
-    fn try_native_call(
-        &self,
-        interpreter: &Interpreter,
-        state: &mut State,
-        sym: Symbol,
-        args: &[Expr],
-    ) -> Result<Value, Error> {
+    pub fn get(&self, sym: Symbol, state: &State) -> Option<&NativeCall> {
         match sym {
-            Symbol::Static(name) => Err(Error::invalid_bridge_call(name.0, "Static symbols are not callable")),
-            Symbol::Shared(id) => match state.strings.resolve(id) {
-                None => Err(Error::no_such_string()),
-                Some(name) => match self.builtins.get(&name[1..]) {
-                    None => Err(Error::unknown_native_call(name)),
-                    Some(NativeCall::Macro(implementation)) => implementation(interpreter, state, &args),
-                    Some(NativeCall::Function(implementation)) => {
-                        let args = args
-                            .iter()
-                            .map(|expr| interpreter.evaluate(state, expr.clone()))
-                            .collect::<Result<Vec<_>, _>>()?;
-
-                        state.with_new_stack_frame(std::iter::empty(), |state| {
-                            // Note: native fns don't have named parameters
-                            implementation(interpreter, state, &args)
-                        })
-                    }
-                },
-            },
+            Symbol::Static(name) => self.builtins.get(&name.0),
+            Symbol::Shared(id) => {
+                let name = state.strings.resolve(id)?;
+                self.builtins.get(&name[1..])
+            }
         }
     }
 }

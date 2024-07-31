@@ -2,7 +2,19 @@
 ; Core Module Prelude
 ;
 
-(#bridge :core.def-macro
-    ('def-macro! '(name args body) '(#bridge :core.def-macro (name args body))))
+((#bridge :core.def-macro)
+    ('def-macro! '(name args body) '((#bridge :core.def-macro) (name args body))))
 
-(def-macro! def-fn! (name args body) (#bridge :core.def-fn (name args body)))
+(def-macro! def-fn! (name args body) ((#bridge :core.def-fn) (name args body)))
+
+(def-fn! call (f args) ((#bridge :core.call) f args))
+
+(def-fn! get (receiver key) ((#bridge :core.get) receiver key))
+(def-fn! set (receiver key value) ((#bridge :core.set) receiver key value))
+(def-fn! last (receiver) ((#bridge :core.last) receiver))
+
+(def-macro! match! (lhs patterns) ((#bridge :core.match) lhs patterns))
+
+(def-macro! let! (assignments expr) ((#bridge :core.let) assignments expr))
+
+(def-fn! do () (last (get #meta :args)))

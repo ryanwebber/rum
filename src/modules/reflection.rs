@@ -23,3 +23,18 @@ impl Module for Reflection {
         include_str!("reflection.rum")
     }
 }
+
+#[cfg(test)]
+mod test {
+    use crate::interpreter;
+    use crate::interpreter::Value;
+
+    #[test]
+    fn test_symbol_to_string() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate_expr("(symbol->string :hello)"),
+            Ok(Value::String(":hello".to_string()))
+        );
+    }
+}

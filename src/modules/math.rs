@@ -49,3 +49,15 @@ impl Module for Math {
         include_str!("math.rum")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::interpreter;
+    use crate::interpreter::Value;
+
+    #[test]
+    fn test_addition() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(runtime.parse_and_evaluate_expr("(+ 1 2 3)"), Ok(Value::Number(6)));
+    }
+}

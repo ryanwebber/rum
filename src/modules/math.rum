@@ -2,4 +2,4 @@
 ; Math Module Prelude
 ;
 
-(def-fn! + (a b) (#bridge :math.addition a b))
+(def-fn! + () (call (#bridge :math.addition) (get #meta :args)))

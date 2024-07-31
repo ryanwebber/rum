@@ -52,8 +52,8 @@ impl interpreter::Module for ReplModule {
 
     fn prelude() -> &'static str {
         indoc! {"
-            (def-fn! exit () (#bridge :repl.exit))
-            (def-fn! help () (#bridge :repl.help))
+            (def-fn! exit () (call (#bridge :repl.exit) []))
+            (def-fn! help () (call (#bridge :repl.help) []))
         "}
     }
 }
