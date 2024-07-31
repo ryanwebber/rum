@@ -261,8 +261,24 @@ pub struct NativeFunction(Symbol);
 impl Callable for NativeFunction {
     fn call_as_macro(&self, interpreter: &Interpreter, state: &mut State, args: &[Expr]) -> Result<Value, Error> {
         match interpreter.backend.get(self.0, state) {
-            Some(NativeCall::Macro(native_impl)) => native_impl(interpreter, state, args),
-            Some(NativeCall::Function(impl_)) => {
+            Some(NativeCall::Macro(native_impl)) => {
+                let args = args
+                    .iter()
+                    .map(|expr| match interpreter.evaluate(state, expr.clone())? {
+                        Value::Expr(expr) => Ok(expr),
+                        value => {
+                            let fn_name = state.get_string(&self.0).unwrap_or("??");
+                            Err(Error::invalid_bridge_call(
+                                fn_name,
+                                &format!("Expected quoted expression, got: {}", value.display(state)),
+                            ))
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                native_impl(interpreter, state, &args)
+            }
+            Some(NativeCall::Function(native_impl)) => {
                 let args = args
                     .iter()
                     .map(|expr| interpreter.evaluate(state, expr.clone()))
@@ -270,7 +286,7 @@ impl Callable for NativeFunction {
 
                 state.with_new_stack_frame(std::iter::empty(), |state| {
                     // Note: native fns don't have named parameters
-                    impl_(interpreter, state, &args)
+                    native_impl(interpreter, state, &args)
                 })
             }
             None => Err(Error::unknown_native_call(state.get_string(&self.0).unwrap_or("??"))),

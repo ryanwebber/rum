@@ -5,65 +5,39 @@ use crate::{
 
 pub struct Core;
 
-fn def_fn_impl(
-    interpreter: &Interpreter,
-    state: &mut State,
-    args: &[Expr],
-    kind: Option<StaticSymbol>,
-) -> Result<Value, Error> {
+fn def_fn_impl(_: &Interpreter, state: &mut State, args: &[Expr], kind: Option<StaticSymbol>) -> Result<Value, Error> {
     match args {
-        [Expr::List(nodes)] => {
-            let arg_exprs: Vec<Expr> = nodes
-                .iter()
-                .map(|expr| interpreter.evaluate(state, expr.clone()))
-                .map(|value| match value {
-                    Err(e) => Err(e),
-                    Ok(Value::Expr(expr)) => Ok(expr),
-                    Ok(value) => Err(Error::invalid_bridge_call(
-                        "core.def-fn",
-                        &format!("Expected an expression, but got: {:?}", value),
-                    )),
-                })
-                .collect::<Result<_, _>>()?;
+        [Expr::Identifier(fname), Expr::List(parameters), body] => {
+            let mut table = Table::new();
+            table.insert(
+                Value::Symbol(Symbol::Static(StaticSymbol::FN_NAME)),
+                state.create_string(fname),
+            );
+            table.insert(
+                Value::Symbol(Symbol::Static(StaticSymbol::FN_BODY)),
+                state.create_expr(body.clone()),
+            );
+            table.insert(
+                Value::Symbol(Symbol::Static(StaticSymbol::FN_PARAMETERS)),
+                state.create_expr(Expr::List(parameters.clone())),
+            );
 
-            match &arg_exprs[..] {
-                [Expr::Identifier(fname), Expr::List(parameters), body] => {
-                    let mut table = Table::new();
-                    table.insert(
-                        Value::Symbol(Symbol::Static(StaticSymbol::FN_NAME)),
-                        state.create_string(fname),
-                    );
-                    table.insert(
-                        Value::Symbol(Symbol::Static(StaticSymbol::FN_BODY)),
-                        state.create_expr(body.clone()),
-                    );
-                    table.insert(
-                        Value::Symbol(Symbol::Static(StaticSymbol::FN_PARAMETERS)),
-                        state.create_expr(Expr::List(parameters.clone())),
-                    );
-
-                    if let Some(kind) = kind {
-                        table.insert(
-                            Value::Symbol(Symbol::Static(StaticSymbol::FN_TYPE)),
-                            Value::Symbol(Symbol::Static(kind)),
-                        );
-                    }
-
-                    let table = state.create_table(table);
-                    let identifier = Symbol::resolve(&fname, state);
-                    state.global_scope_mut().set_local(identifier, table.clone());
-
-                    Ok(table)
-                }
-                _ => Err(Error::invalid_bridge_call(
-                    "core.def-fn",
-                    &format!("Expected (<ID> <LIST> <EXPR>), but got: {:?}", nodes),
-                )),
+            if let Some(kind) = kind {
+                table.insert(
+                    Value::Symbol(Symbol::Static(StaticSymbol::FN_TYPE)),
+                    Value::Symbol(Symbol::Static(kind)),
+                );
             }
+
+            let table = state.create_table(table);
+            let identifier = Symbol::resolve(&fname, state);
+            state.global_scope_mut().set_local(identifier, table.clone());
+
+            Ok(table)
         }
         _ => Err(Error::invalid_bridge_call(
             "core.def-fn",
-            &format!("Malformed core.def-fn bridge call args, got: {:?}", args),
+            &format!("Expected (<ID> <LIST> <EXPR>), but got: {:?}", args),
         )),
     }
 }
@@ -126,67 +100,53 @@ impl Module for Core {
         backend.register(
             "core.match",
             NativeCall::Macro(|interpreter, state, args| match args {
-                [Expr::Identifier(lhs_id), Expr::Identifier(patterns_id)] => {
-                    let lhs = interpreter.evaluate(state, Expr::Identifier(lhs_id.clone()))?;
-                    let patterns = interpreter.evaluate(state, Expr::Identifier(patterns_id.clone()))?;
-                    match (lhs, patterns) {
-                        (Value::Expr(lhs), Value::Expr(Expr::Map(patterns))) => {
-                            let lhs = interpreter.evaluate(state, lhs.clone())?;
-                            for (pattern, body) in patterns.iter() {
-                                match pattern {
-                                    Expr::Number(..) | Expr::String(..) | Expr::Symbol(..) => {
-                                        if lhs == interpreter.evaluate(state, pattern.clone())? {
-                                            return interpreter.evaluate(state, body.clone());
-                                        }
-                                    }
-                                    Expr::Identifier(..) => {
-                                        let pattern = interpreter.evaluate(state, pattern.clone())?;
-                                        if lhs == pattern {
-                                            return interpreter.evaluate(state, body.clone());
-                                        }
-                                    }
-                                    _ => todo!(),
+                [lhs, Expr::Map(patterns)] => {
+                    let lhs = interpreter.evaluate(state, lhs.clone())?;
+                    for (pattern, body) in patterns.iter() {
+                        match pattern {
+                            Expr::Number(..) | Expr::String(..) | Expr::Symbol(..) => {
+                                if lhs == interpreter.evaluate(state, pattern.clone())? {
+                                    return interpreter.evaluate(state, body.clone());
                                 }
                             }
-
-                            Err(Error::no_matching_pattern(lhs.display(state), &patterns))
+                            Expr::Identifier(..) => {
+                                let pattern = interpreter.evaluate(state, pattern.clone())?;
+                                if lhs == pattern {
+                                    return interpreter.evaluate(state, body.clone());
+                                }
+                            }
+                            _ => todo!(),
                         }
-                        _ => Err(Error::invalid_bridge_call(
-                            "core.match",
-                            &format!("Expected (expr table), but got: {:?}", args),
-                        )),
                     }
+
+                    Err(Error::no_matching_pattern(lhs.display(state), &patterns))
                 }
-                _ => unreachable!("core.match: Expected (lhs patterns)"),
+                _ => Err(Error::invalid_bridge_call(
+                    "core.match",
+                    &format!("Expected (expr table), but got: {:?}", args),
+                )),
             }),
         );
 
         backend.register(
             "core.let",
             NativeCall::Macro(|interpreter, state, args| match args {
-                [Expr::Identifier(assignments_id), Expr::Identifier(expr_id)] => {
-                    let assignments = interpreter.evaluate(state, Expr::Identifier(assignments_id.clone()))?;
-                    let expr = interpreter.evaluate(state, Expr::Identifier(expr_id.clone()))?;
-                    match (assignments, expr) {
-                        (Value::Expr(Expr::Map(assignments)), Value::Expr(lhs)) => {
-                            for (lhs, expr) in assignments.iter() {
-                                if let Expr::Identifier(id) = lhs {
-                                    let value = interpreter.evaluate(state, expr.clone())?;
-                                    let symbol = Symbol::resolve(id, state);
-                                    state.current_scope_mut().set_local(symbol, value);
-                                }
-                            }
-
-                            // TODO: Should we pop these bindings?
-                            interpreter.evaluate(state, lhs)
+                [Expr::Map(assignments), lhs] => {
+                    for (lhs, expr) in assignments.iter() {
+                        if let Expr::Identifier(id) = lhs {
+                            let value = interpreter.evaluate(state, expr.clone())?;
+                            let symbol = Symbol::resolve(id, state);
+                            state.current_scope_mut().set_local(symbol, value);
                         }
-                        _ => Err(Error::invalid_bridge_call(
-                            "core.match",
-                            &format!("Expected (expr table), but got: {:?}", args),
-                        )),
                     }
+
+                    // TODO: Should we pop these bindings?
+                    interpreter.evaluate(state, lhs.clone())
                 }
-                _ => unreachable!("core.match: Expected (lhs patterns)"),
+                _ => Err(Error::invalid_bridge_call(
+                    "core.match",
+                    &format!("Expected (expr table), but got: {:?}", args),
+                )),
             }),
         );
     }
