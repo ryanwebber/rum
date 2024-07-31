@@ -1,6 +1,6 @@
 use crate::{
     ast::Expr,
-    interpreter::{Backend, Error, Module, NativeCall, State, Symbol, Table, Value},
+    interpreter::{Backend, Error, Module, NativeCall, State, Table, Value},
 };
 
 pub struct Core;
@@ -37,8 +37,8 @@ impl Module for Core {
             NativeCall::Macro(|_, state, args| match args.split_first() {
                 Some((Expr::Identifier(id), rest)) => {
                     let table = parse_lambda("core.def-macro", state, rest, true)?;
-                    let value = state.create_table(table);
-                    let symbol = Symbol::resolve(id, state);
+                    let value = Value::table(table);
+                    let symbol = state.get_symbol(id);
                     state.global_scope_mut().set_local(symbol, value.clone());
                     Ok(value)
                 }
@@ -54,8 +54,8 @@ impl Module for Core {
             NativeCall::Macro(|_, state, args| match args.split_first() {
                 Some((Expr::Identifier(id), rest)) => {
                     let table = parse_lambda("core.def-fn", state, rest, false)?;
-                    let value = state.create_table(table);
-                    let symbol = Symbol::resolve(id, state);
+                    let value = Value::table(table);
+                    let symbol = state.get_symbol(id);
                     state.global_scope_mut().set_local(symbol, value.clone());
                     Ok(value)
                 }
@@ -70,7 +70,7 @@ impl Module for Core {
             "core.lambda",
             NativeCall::Macro(|_, state, args| {
                 let table = parse_lambda("core.lambda", state, args, false)?;
-                Ok(state.create_table(table))
+                Ok(Value::table(table))
             }),
         );
 
@@ -175,7 +175,7 @@ impl Module for Core {
                     for (lhs, expr) in assignments.iter() {
                         if let Expr::Identifier(id) = lhs {
                             let value = interpreter.evaluate(state, expr.clone())?;
-                            let symbol = Symbol::resolve(id, state);
+                            let symbol = state.get_symbol(id);
                             state.current_scope_mut().set_local(symbol, value);
                         }
                     }

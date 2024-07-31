@@ -1,6 +1,6 @@
 use core::{fmt, hash::Hash};
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::HashMap,
     fmt::{Display, Formatter},
 };
 
@@ -148,6 +148,14 @@ impl Value {
         Value::List(vec![])
     }
 
+    pub fn table(table: Table) -> Self {
+        Value::Table(Gc::new(table))
+    }
+
+    pub fn vector(values: Vec<Value>) -> Self {
+        Value::Vector(Gc::new(values))
+    }
+
     pub fn display<'a>(&'a self, state: &'a State) -> PrintableValue<'a> {
         PrintableValue(state, self)
     }
@@ -219,7 +227,7 @@ pub enum Symbol {
 }
 
 impl Symbol {
-    pub fn resolve(s: &str, state: &mut State) -> Self {
+    fn lookup(s: &str, state: &mut State) -> Self {
         if let Some(inner) = StaticSymbol::as_static_symbol(s) {
             return Symbol::Static(inner);
         } else {
@@ -316,10 +324,6 @@ impl Table {
         Table(HashMap::new())
     }
 
-    pub fn entry(&mut self, key: Value) -> Entry<Value, Value> {
-        self.0.entry(key)
-    }
-
     pub fn insert(&mut self, key: Value, value: Value) {
         self.0.insert(key, value);
     }
@@ -328,28 +332,16 @@ impl Table {
         self.0.get(key)
     }
 
-    pub fn remove(&mut self, key: &Value) -> Option<Value> {
-        self.0.remove(key)
-    }
-
     pub fn iter(&self) -> impl Iterator<Item = (&Value, &Value)> {
         self.0.iter()
     }
 
-    pub fn callable(
-        state: &mut State,
-        parameter_names: impl Iterator<Item = String>,
-        body: Expr,
-        is_macro: bool,
-    ) -> Self {
+    pub fn callable(_: &mut State, parameter_names: impl Iterator<Item = String>, body: Expr, is_macro: bool) -> Self {
         let mut table = Table::new();
-        table.insert(
-            Value::Symbol(Symbol::Static(StaticSymbol::FN_BODY)),
-            state.create_expr(body),
-        );
+        table.insert(Value::Symbol(Symbol::Static(StaticSymbol::FN_BODY)), Value::Expr(body));
         table.insert(
             Value::Symbol(Symbol::Static(StaticSymbol::FN_PARAMETERS)),
-            state.create_expr(Expr::List(
+            Value::Expr(Expr::List(
                 parameter_names.map(|name| Expr::Identifier(name)).collect::<Vec<_>>(),
             )),
         );
@@ -390,7 +382,7 @@ impl Callable for Table {
             let mut parameters = Vec::with_capacity(args.len());
             for (i, arg) in args.iter().enumerate() {
                 let binding = match parameter_names.get(i) {
-                    Some(Expr::Identifier(name)) => Some(Symbol::resolve(&name, state)),
+                    Some(Expr::Identifier(name)) => Some(Symbol::lookup(&name, state)),
                     _ => None,
                 };
 
@@ -420,7 +412,7 @@ impl Callable for Table {
             let mut parameters = Vec::with_capacity(args.len());
             for (i, arg) in args.iter().enumerate() {
                 let binding = match parameter_names.get(i) {
-                    Some(Expr::Identifier(name)) => Some(Symbol::resolve(&name, state)),
+                    Some(Expr::Identifier(name)) => Some(state.get_symbol(&name)),
                     _ => None,
                 };
 
@@ -512,6 +504,10 @@ impl State {
         })
     }
 
+    pub fn get_symbol(&mut self, s: &str) -> Symbol {
+        Symbol::lookup(s, self)
+    }
+
     pub fn current_scope(&self) -> &Scope {
         self.callstack.last().unwrap()
     }
@@ -538,34 +534,6 @@ impl State {
         None
     }
 
-    pub fn create_empty(&mut self) -> Value {
-        Value::List(vec![])
-    }
-
-    pub fn create_table(&mut self, table: impl Into<Table>) -> Value {
-        Value::Table(Gc::new(table.into()))
-    }
-
-    pub fn create_vector(&mut self, items: impl Into<Vec<Value>>) -> Value {
-        Value::Vector(Gc::new(items.into()))
-    }
-
-    pub fn create_string(&mut self, s: impl Into<String>) -> Value {
-        Value::String(s.into())
-    }
-
-    pub fn create_symbol(&mut self, name: impl AsRef<str>) -> Value {
-        Value::Symbol(Symbol::resolve(name.as_ref(), self))
-    }
-
-    pub fn create_list(&mut self, items: impl Into<Vec<Expr>>) -> Value {
-        Value::List(items.into())
-    }
-
-    pub fn create_expr(&mut self, expr: impl Into<Expr>) -> Value {
-        Value::Expr(expr.into())
-    }
-
     pub fn with_new_stack_frame(
         &mut self,
         args: impl Iterator<Item = (Value, Option<Symbol>)>,
@@ -581,10 +549,11 @@ impl State {
             argvec.push(value);
         }
 
-        scope.metatable.borrow_mut().0.insert(
-            Value::Symbol(Symbol::Static(StaticSymbol::ARGS)),
-            self.create_vector(argvec),
-        );
+        scope
+            .metatable
+            .borrow_mut()
+            .0
+            .insert(Value::Symbol(Symbol::Static(StaticSymbol::ARGS)), Value::vector(argvec));
 
         self.callstack.push(scope);
         let result = f(self);
@@ -607,11 +576,11 @@ impl Interpreter {
     pub fn evaluate(&self, state: &mut State, expr: Expr) -> Result<Value, Error> {
         match expr {
             Expr::Identifier(id) => {
-                let sym: Symbol = Symbol::resolve(&id, state);
+                let sym: Symbol = state.get_symbol(&id);
                 state.resolve(sym).ok_or_else(|| Error::unbound_identifier(&id))
             }
             Expr::List(exprs) => match exprs.split_first() {
-                None => Ok(state.create_empty()),
+                None => Ok(Value::empty()),
                 Some((first, args)) => {
                     let callee = self.evaluate(state, first.clone())?;
                     self.call_as_macro(state, &callee, args)
@@ -626,7 +595,7 @@ impl Interpreter {
             },
             Expr::Quoted(expr) => Ok(Value::Expr(*expr)),
             Expr::String(s) => Ok(Value::String(s)),
-            Expr::Symbol(sym) => Ok(Value::Symbol(Symbol::resolve(&sym, state))),
+            Expr::Symbol(sym) => Ok(Value::Symbol(state.get_symbol(&sym))),
             Expr::Map(pairs) => {
                 let mut table = Table::new();
                 for (key, value) in pairs {
@@ -766,14 +735,6 @@ impl Runtime {
             })
     }
 
-    pub fn evaluate_expr(&mut self, expr: Expr) -> Result<Value, Error> {
-        self.interpreter.evaluate(&mut self.state, expr)
-    }
-
-    pub fn evaluate_exprs(&mut self, exprs: Vec<Expr>) -> Result<Vec<Value>, Error> {
-        exprs.into_iter().map(|expr| self.evaluate_expr(expr)).collect()
-    }
-
     pub fn print_value<'a>(&'a self, value: &'a Value) -> PrintableValue<'a> {
         PrintableValue(&self.state, value)
     }
@@ -781,7 +742,6 @@ impl Runtime {
 
 #[cfg(test)]
 mod test {
-
     use super::*;
 
     #[test]

@@ -1,5 +1,4 @@
 use crate::interpreter::{Error, Module, NativeCall, Value};
-use crate::types::Numeric;
 
 pub struct Math;
 

@@ -1,9 +1,9 @@
-use crate::interpreter::{Error, Module, NativeCall, Value};
+use crate::interpreter::Module;
 
 pub struct Collections;
 
 impl Module for Collections {
-    fn register_builtins(&self, backend: &mut crate::interpreter::Backend) {
+    fn register_builtins(&self, _: &mut crate::interpreter::Backend) {
         // TODO
     }
 
