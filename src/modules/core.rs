@@ -1,43 +1,31 @@
 use crate::{
     ast::Expr,
-    interpreter::{Backend, Error, Interpreter, Module, NativeCall, State, StaticSymbol, Symbol, Table, Value},
+    interpreter::{Backend, Error, Module, NativeCall, State, Symbol, Table, Value},
 };
 
 pub struct Core;
 
-fn def_fn_impl(_: &Interpreter, state: &mut State, args: &[Expr], kind: Option<StaticSymbol>) -> Result<Value, Error> {
+fn parse_lambda(call: &'static str, state: &mut State, args: &[Expr], is_macro: bool) -> Result<Table, Error> {
     match args {
-        [Expr::Identifier(fname), Expr::List(parameters), body] => {
-            let mut table = Table::new();
-            table.insert(
-                Value::Symbol(Symbol::Static(StaticSymbol::FN_NAME)),
-                state.create_string(fname),
-            );
-            table.insert(
-                Value::Symbol(Symbol::Static(StaticSymbol::FN_BODY)),
-                state.create_expr(body.clone()),
-            );
-            table.insert(
-                Value::Symbol(Symbol::Static(StaticSymbol::FN_PARAMETERS)),
-                state.create_expr(Expr::List(parameters.clone())),
-            );
+        [Expr::List(parameters), body] => {
+            let parameter_names: Vec<String> = parameters
+                .iter()
+                .map(|expr| match expr {
+                    Expr::Identifier(id) => Ok(id.clone()),
+                    _ => Err(Error::invalid_bridge_call(
+                        "core.def-macro",
+                        &format!("Expected parameter name to be an identifier, but got: {:?}", expr),
+                    )),
+                })
+                .collect::<Result<_, _>>()?;
 
-            if let Some(kind) = kind {
-                table.insert(
-                    Value::Symbol(Symbol::Static(StaticSymbol::FN_TYPE)),
-                    Value::Symbol(Symbol::Static(kind)),
-                );
-            }
-
-            let table = state.create_table(table);
-            let identifier = Symbol::resolve(&fname, state);
-            state.global_scope_mut().set_local(identifier, table.clone());
+            let table = Table::callable(state, parameter_names.into_iter(), body.clone(), is_macro);
 
             Ok(table)
         }
         _ => Err(Error::invalid_bridge_call(
-            "core.def-fn",
-            &format!("Expected (<ID> <LIST> <EXPR>), but got: {:?}", args),
+            call,
+            &format!("Invalid function definition, got: {:?}", args),
         )),
     }
 }
@@ -46,20 +34,50 @@ impl Module for Core {
     fn register_builtins(&self, backend: &mut Backend) {
         backend.register(
             "core.def-macro",
-            NativeCall::Macro(|interpreter, state, args| {
-                def_fn_impl(interpreter, state, args, Some(StaticSymbol::MACRO))
+            NativeCall::Macro(|_, state, args| match args.split_first() {
+                Some((Expr::Identifier(id), rest)) => {
+                    let table = parse_lambda("core.def-macro", state, rest, true)?;
+                    let value = state.create_table(table);
+                    let symbol = Symbol::resolve(id, state);
+                    state.global_scope_mut().set_local(symbol, value.clone());
+                    Ok(value)
+                }
+                _ => Err(Error::invalid_bridge_call(
+                    "core.def-macro",
+                    &format!("Expected (id [args...] body), but got: {:?}", args),
+                )),
             }),
         );
 
         backend.register(
             "core.def-fn",
-            NativeCall::Macro(|interpreter, state, args| def_fn_impl(interpreter, state, args, None)),
+            NativeCall::Macro(|_, state, args| match args.split_first() {
+                Some((Expr::Identifier(id), rest)) => {
+                    let table = parse_lambda("core.def-fn", state, rest, false)?;
+                    let value = state.create_table(table);
+                    let symbol = Symbol::resolve(id, state);
+                    state.global_scope_mut().set_local(symbol, value.clone());
+                    Ok(value)
+                }
+                _ => Err(Error::invalid_bridge_call(
+                    "core.def-fn",
+                    &format!("Expected (id [args...] body), but got: {:?}", args),
+                )),
+            }),
+        );
+
+        backend.register(
+            "core.lambda",
+            NativeCall::Macro(|_, state, args| {
+                let table = parse_lambda("core.lambda", state, args, false)?;
+                Ok(state.create_table(table))
+            }),
         );
 
         backend.register(
             "core.call",
             NativeCall::Function(|interpreter, state, args| match args {
-                [callee, Value::Vector(args)] => interpreter.call_as_function(state, &callee, &args),
+                [callee, Value::Vector(args)] => interpreter.call_as_function(state, &callee, &args.borrow().clone()),
                 _ => Err(Error::invalid_bridge_call("core.call", "Expected (callee [args...])")),
             }),
         );
@@ -68,6 +86,15 @@ impl Module for Core {
             "core.get",
             NativeCall::Function(|_, _, args| match args {
                 [Value::Table(table), key] => Ok(table.borrow().get(key).cloned().unwrap_or_else(|| Value::empty())),
+                [Value::Vector(vec), Value::Number(index)] => {
+                    let index = *index as usize;
+                    let vec = vec.borrow();
+                    if index < vec.len() {
+                        Ok(vec[index].clone())
+                    } else {
+                        Ok(Value::empty())
+                    }
+                }
                 _ => Err(Error::invalid_bridge_call(
                     "core.get",
                     &format!("Expected (table|vec key), but got: {:?}", args),
@@ -80,7 +107,20 @@ impl Module for Core {
             NativeCall::Function(|_, _, args| match args {
                 [Value::Table(table), key, value] => {
                     table.borrow_mut().insert(key.clone(), value.clone());
-                    Ok(Value::empty())
+                    Ok(Value::Table(table.clone()))
+                }
+                [Value::Vector(vec), Value::Number(index), value] => {
+                    {
+                        let mut vec = vec.borrow_mut();
+                        let index = *index as usize;
+                        if index < vec.len() {
+                            vec[index] = value.clone();
+                        } else {
+                            vec.push(value.clone());
+                        }
+                    }
+
+                    Ok(Value::Vector(vec.clone()))
                 }
                 _ => Err(Error::invalid_bridge_call(
                     "core.set",
@@ -92,7 +132,7 @@ impl Module for Core {
         backend.register(
             "core.last",
             NativeCall::Function(|_, _, args| match args {
-                [Value::Vector(vec)] => Ok(vec.last().cloned().unwrap_or_else(|| Value::empty())),
+                [Value::Vector(vec)] => Ok(vec.borrow().last().cloned().unwrap_or_else(|| Value::empty())),
                 _ => Err(Error::invalid_bridge_call("core.last", "Expected (vec), but got: {:?}")),
             }),
         );
@@ -182,6 +222,31 @@ mod tests {
                 (call + [1 2])
             "}),
             Ok(Value::Number(3))
+        );
+    }
+
+    #[test]
+    fn test_lambda() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {"
+                (call (lambda! (a) (+ a a)) [2])
+            "}),
+            Ok(Value::Number(4))
+        );
+    }
+
+    #[test]
+    fn test_set_vec() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {r#"
+                (let! { a => [0] }
+                    (do
+                        (set a 0 1)
+                        (get a 0)))
+            "#}),
+            Ok(Value::Number(1))
         );
     }
 

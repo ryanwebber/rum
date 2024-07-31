@@ -140,7 +140,7 @@ pub enum Value {
     String(String),
     Symbol(Symbol),
     Table(Gc<Table>),
-    Vector(Vec<Value>),
+    Vector(Gc<Vec<Value>>),
 }
 
 impl Value {
@@ -179,7 +179,7 @@ impl<'a> Display for PrintableValue<'a> {
             },
             Value::Table(table) => {
                 write!(f, "{{")?;
-                for (key, value) in table.borrow().0.iter() {
+                for (key, value) in table.borrow().iter() {
                     write!(
                         f,
                         "{}: {}, ",
@@ -191,7 +191,7 @@ impl<'a> Display for PrintableValue<'a> {
             }
             Value::Vector(items) => {
                 write!(f, "[")?;
-                for item in items {
+                for item in items.borrow().iter() {
                     write!(f, "{} ", PrintableValue(self.0, item))?;
                 }
                 write!(f, "]")
@@ -234,7 +234,6 @@ pub struct StaticSymbol(&'static str);
 impl StaticSymbol {
     pub const ARGS: StaticSymbol = StaticSymbol(":args");
     pub const FN_BODY: StaticSymbol = StaticSymbol(":fn.body");
-    pub const FN_NAME: StaticSymbol = StaticSymbol(":fn.name");
     pub const FN_PARAMETERS: StaticSymbol = StaticSymbol(":fn.parameters");
     pub const FN_TYPE: StaticSymbol = StaticSymbol(":fn.type");
     pub const LOCALS: StaticSymbol = StaticSymbol(":locals");
@@ -243,7 +242,6 @@ impl StaticSymbol {
     const ALL: &'static [StaticSymbol] = &[
         StaticSymbol::ARGS,
         StaticSymbol::FN_BODY,
-        StaticSymbol::FN_NAME,
         StaticSymbol::FN_PARAMETERS,
         StaticSymbol::FN_TYPE,
         StaticSymbol::LOCALS,
@@ -336,6 +334,34 @@ impl Table {
 
     pub fn iter(&self) -> impl Iterator<Item = (&Value, &Value)> {
         self.0.iter()
+    }
+
+    pub fn callable(
+        state: &mut State,
+        parameter_names: impl Iterator<Item = String>,
+        body: Expr,
+        is_macro: bool,
+    ) -> Self {
+        let mut table = Table::new();
+        table.insert(
+            Value::Symbol(Symbol::Static(StaticSymbol::FN_BODY)),
+            state.create_expr(body),
+        );
+        table.insert(
+            Value::Symbol(Symbol::Static(StaticSymbol::FN_PARAMETERS)),
+            state.create_expr(Expr::List(
+                parameter_names.map(|name| Expr::Identifier(name)).collect::<Vec<_>>(),
+            )),
+        );
+
+        if is_macro {
+            table.insert(
+                Value::Symbol(Symbol::Static(StaticSymbol::FN_TYPE)),
+                Value::Symbol(Symbol::Static(StaticSymbol::MACRO)),
+            );
+        }
+
+        table
     }
 }
 
@@ -521,7 +547,7 @@ impl State {
     }
 
     pub fn create_vector(&mut self, items: impl Into<Vec<Value>>) -> Value {
-        Value::Vector(items.into())
+        Value::Vector(Gc::new(items.into()))
     }
 
     pub fn create_string(&mut self, s: impl Into<String>) -> Value {
@@ -617,7 +643,7 @@ impl Interpreter {
                     .map(|expr| self.evaluate(state, expr))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                Ok(Value::Vector(values))
+                Ok(Value::Vector(Gc::new(values)))
             }
         }
     }
@@ -770,14 +796,18 @@ mod test {
     #[test]
     fn test_simple_function() {
         let mut runtime = Runtime::new();
-        let result = runtime.parse_and_evaluate_exprs(indoc::indoc! {"
+        let v = runtime
+            .parse_and_evaluate_exprs(indoc::indoc! {"
             (def-fn! twice (x) [x x])
             (twice 2)
-        "});
+        "})
+            .unwrap()
+            .unwrap();
 
-        assert_eq!(
-            result,
-            Ok(Some(Value::Vector(vec![Value::Number(2), Value::Number(2)])))
-        );
+        let Value::Vector(v) = v else {
+            panic!("Expected a vector, got: {:?}", v);
+        };
+
+        assert_eq!(v.borrow().as_slice(), &[Value::Number(2), Value::Number(2)]);
     }
 }

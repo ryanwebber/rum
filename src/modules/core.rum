@@ -6,6 +6,7 @@
     'def-macro! '(name args body) '((#bridge :core.def-macro) name args body))
 
 (def-macro! def-fn! (name args body) ((#bridge :core.def-fn) name args body))
+(def-macro! lambda! (args body) ((#bridge :core.lambda) args body))
 
 (def-fn! call (f args) ((#bridge :core.call) f args))
 
