@@ -2,6 +2,7 @@ use core::{fmt, hash::Hash};
 use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
+    hash::{DefaultHasher, Hasher},
 };
 
 use crate::{ast::Expr, gc::Gc, interner, modules, parser, types::*};
@@ -324,6 +325,10 @@ impl Table {
         Table(HashMap::new())
     }
 
+    pub fn entries(&self) -> impl Iterator<Item = (&Value, &Value)> {
+        self.0.iter()
+    }
+
     pub fn insert(&mut self, key: Value, value: Value) {
         self.0.insert(key, value);
     }
@@ -354,6 +359,20 @@ impl Table {
         }
 
         table
+    }
+}
+
+impl Hash for Table {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // TODO: Implement a better hash function
+        let hash = self.entries().fold(0u64, |acc, (key, value)| {
+            let mut hasher = DefaultHasher::new();
+            key.hash(&mut hasher);
+            value.hash(&mut hasher);
+            acc.wrapping_add(hasher.finish())
+        });
+
+        state.write_u64(hash);
     }
 }
 
@@ -756,18 +775,12 @@ mod test {
     #[test]
     fn test_simple_function() {
         let mut runtime = Runtime::new();
-        let v = runtime
-            .parse_and_evaluate_exprs(indoc::indoc! {"
-            (def-fn! twice (x) [x x])
-            (twice 2)
-        "})
-            .unwrap()
-            .unwrap();
-
-        let Value::Vector(v) = v else {
-            panic!("Expected a vector, got: {:?}", v);
-        };
-
-        assert_eq!(v.borrow().as_slice(), &[Value::Number(2), Value::Number(2)]);
+        assert_eq!(
+            runtime.parse_and_evaluate_exprs(indoc::indoc! {"
+                (def-fn! twice (x) [x x])
+                (twice 2)
+            "}),
+            Ok(Some(Value::Vector(Gc::new(vec![Value::Number(2), Value::Number(2)]))))
+        );
     }
 }

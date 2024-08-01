@@ -1,3 +1,5 @@
 ;
 ; Collections Module Prelude
 ;
+
+(def-fn! map (v f) ((#bridge :collections.map) v f))

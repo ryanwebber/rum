@@ -10,18 +10,23 @@ use std::{
 
 pub struct Gc<T>(Rc<RefCell<T>>);
 
-impl<T> PartialEq for Gc<T> {
+impl<T> PartialEq for Gc<T>
+where
+    T: PartialEq,
+{
     fn eq(&self, other: &Self) -> bool {
-        self.0.as_ptr() == other.0.as_ptr()
+        self.0.as_ref().borrow().eq(&*other.0.as_ref().borrow())
     }
 }
 
-impl<T> Eq for Gc<T> {}
+impl<T> Eq for Gc<T> where T: Eq {}
 
-impl<T> Hash for Gc<T> {
+impl<T> Hash for Gc<T>
+where
+    T: Hash,
+{
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Hash by ptr
-        self.0.as_ptr().hash(state);
+        self.0.as_ref().borrow().hash(state)
     }
 }
 

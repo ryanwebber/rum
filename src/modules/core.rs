@@ -1,6 +1,7 @@
 use crate::{
     ast::Expr,
     interpreter::{Backend, Error, Module, NativeCall, State, Table, Value},
+    parser,
 };
 
 pub struct Core;
@@ -189,6 +190,24 @@ impl Module for Core {
                 )),
             }),
         );
+
+        backend.register(
+            "core.eval",
+            NativeCall::Function(|interpreter, state, args| match args {
+                [Value::String(code)] => {
+                    // TODO: Get this from the runtime?
+                    let parser = parser::ExprsParser::new();
+                    let exprs = parser.parse(code).map_err(|e| Error::invalid_parse(&e))?;
+                    exprs
+                        .into_iter()
+                        .try_fold(Value::empty(), |_, expr| interpreter.evaluate(state, expr))
+                }
+                _ => Err(Error::invalid_bridge_call(
+                    "core.match",
+                    &format!("Expected (expr table), but got: {:?}", args),
+                )),
+            }),
+        );
     }
 
     fn prelude() -> &'static str {
@@ -221,6 +240,30 @@ mod tests {
             runtime.parse_and_evaluate_expr(indoc::indoc! {"
                 (call + [1 2])
             "}),
+            Ok(Value::Number(3))
+        );
+    }
+
+    #[test]
+    fn test_eval() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {r#"
+                (eval "(+ 1 2)")
+            "#}),
+            Ok(Value::Number(3))
+        );
+    }
+
+    #[test]
+    fn test_eval_scope() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {r#"
+                (let!
+                    { x => 2 }
+                     (eval "(+ x 1)"))
+            "#}),
             Ok(Value::Number(3))
         );
     }

@@ -9,6 +9,7 @@
 (def-macro! lambda! (args body) ((#bridge :core.lambda) args body))
 
 (def-fn! call (f args) ((#bridge :core.call) f args))
+(def-fn! eval (source) ((#bridge :core.eval) source))
 
 (def-fn! get (receiver key) ((#bridge :core.get) receiver key))
 (def-fn! set (receiver key value) ((#bridge :core.set) receiver key value))
