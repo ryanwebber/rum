@@ -131,10 +131,32 @@ impl Module for Core {
         );
 
         backend.register(
+            "core.first",
+            NativeCall::Function(|_, _, args| match args {
+                [Value::Vector(vec)] => Ok(vec.borrow().first().cloned().unwrap_or_else(|| Value::empty())),
+                _ => Err(Error::invalid_bridge_call("core.last", "Expected (vec), but got: {:?}")),
+            }),
+        );
+
+        backend.register(
             "core.last",
             NativeCall::Function(|_, _, args| match args {
                 [Value::Vector(vec)] => Ok(vec.borrow().last().cloned().unwrap_or_else(|| Value::empty())),
                 _ => Err(Error::invalid_bridge_call("core.last", "Expected (vec), but got: {:?}")),
+            }),
+        );
+
+        backend.register(
+            "core.append",
+            NativeCall::Function(|_, _, args| match args {
+                [Value::Vector(vec), value] => {
+                    vec.borrow_mut().push(value.clone());
+                    Ok(Value::Vector(vec.clone()))
+                }
+                _ => Err(Error::invalid_bridge_call(
+                    "core.push",
+                    "Expected (vec value), but got: {:?}",
+                )),
             }),
         );
 
@@ -206,6 +228,36 @@ impl Module for Core {
                     "core.match",
                     &format!("Expected (expr table), but got: {:?}", args),
                 )),
+            }),
+        );
+
+        backend.register(
+            "core.equal",
+            NativeCall::Function(|_, _, args| {
+                let all_equal = args.windows(2).all(|pair| pair[0] == pair[1]);
+                Ok(Value::Bool(all_equal))
+            }),
+        );
+
+        backend.register(
+            "core.and",
+            NativeCall::Function(|_, _, args| {
+                let all_true = args.iter().all(|arg| match arg {
+                    Value::Bool(true) => true,
+                    _ => false,
+                });
+                Ok(Value::Bool(all_true))
+            }),
+        );
+
+        backend.register(
+            "core.or",
+            NativeCall::Function(|_, _, args| {
+                let any_true = args.iter().any(|arg| match arg {
+                    Value::Bool(true) => true,
+                    _ => false,
+                });
+                Ok(Value::Bool(any_true))
             }),
         );
     }
@@ -337,6 +389,60 @@ mod tests {
                 (do 1 2 3 4)
             "#}),
             Ok(Value::Number(4))
+        );
+    }
+
+    #[test]
+    fn test_equal() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {r#"
+                (equal? [1 2] [1 2] [1 2])
+            "#}),
+            Ok(Value::Bool(true))
+        );
+
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {r#"
+                (equal? '(1 2) '(1 2))
+            "#}),
+            Ok(Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn test_and() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {r#"
+                (and? #true #true #true)
+            "#}),
+            Ok(Value::Bool(true))
+        );
+
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {r#"
+                (and? #true #true #false)
+            "#}),
+            Ok(Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn test_or() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {r#"
+                (or? #false #false #true)
+            "#}),
+            Ok(Value::Bool(true))
+        );
+
+        assert_eq!(
+            runtime.parse_and_evaluate_expr(indoc::indoc! {r#"
+                (or? #false #false #false)
+            "#}),
+            Ok(Value::Bool(false))
         );
     }
 }

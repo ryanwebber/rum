@@ -3,3 +3,4 @@
 ;
 
 (def-fn! map (v f) ((#bridge :collections.map) v f))
+(def-fn! reduce (v acc f) ((#bridge :collections.reduce) v acc f))

@@ -13,10 +13,17 @@
 
 (def-fn! get (receiver key) ((#bridge :core.get) receiver key))
 (def-fn! set (receiver key value) ((#bridge :core.set) receiver key value))
+
+(def-fn! first (receiver) ((#bridge :core.first) receiver))
 (def-fn! last (receiver) ((#bridge :core.last) receiver))
+(def-fn! append (receiver value) ((#bridge :core.append) receiver value))
 
 (def-macro! match! (lhs patterns) ((#bridge :core.match) lhs patterns))
 
 (def-macro! let! (assignments expr) ((#bridge :core.let) assignments expr))
 
 (def-fn! do () (last (get #meta :args)))
+
+(def-fn! equal? () (call (#bridge :core.equal) (get #meta :args)))
+(def-fn! and? () (call (#bridge :core.and) (get #meta :args)))
+(def-fn! or? () (call (#bridge :core.or) (get #meta :args)))

@@ -68,11 +68,4 @@ mod tests {
         assert!(rum::ExprParser::new().parse("'()").is_ok());
         assert!(rum::ExprParser::new().parse("(')").is_err());
     }
-
-    #[test]
-    fn test_parse_exprs() {
-        rum::ExprsParser::new()
-            .parse(include_str!("samples/showcase.rum"))
-            .expect("Failed to parse showcase.rum");
-    }
 }

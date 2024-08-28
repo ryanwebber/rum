@@ -134,6 +134,7 @@ impl Display for Error {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Value {
     Bridge,
+    Bool(bool),
     Expr(Expr),
     List(Vec<Expr>),
     NativeFunction(NativeFunction),
@@ -168,6 +169,7 @@ impl<'a> Display for PrintableValue<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.1 {
             Value::Bridge => write!(f, "<bridge>"),
+            Value::Bool(b) => write!(f, "{}", b),
             Value::Expr(expr) => write!(f, "{:?}", expr),
             Value::List(items) => {
                 write!(f, "'(")?;
@@ -365,6 +367,8 @@ impl Table {
 impl Hash for Table {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // TODO: Implement a better hash function
+        // We could use a BTreeMap here, but that would require Value to implement Ord
+        // and no clear ordering exists for various value types
         let hash = self.entries().fold(0u64, |acc, (key, value)| {
             let mut hasher = DefaultHasher::new();
             key.hash(&mut hasher);
@@ -610,6 +614,8 @@ impl Interpreter {
                 "bridge" => Ok(Value::Bridge),
                 "global" => Ok(Value::Table(state.global_scope().metatable.clone())),
                 "meta" => Ok(Value::Table(state.current_scope().metatable.clone())),
+                "true" => Ok(Value::Bool(true)),
+                "false" => Ok(Value::Bool(false)),
                 _ => Err(Error::unknown_pseudo_value(&name)),
             },
             Expr::Quoted(expr) => Ok(Value::Expr(*expr)),

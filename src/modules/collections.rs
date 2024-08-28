@@ -23,6 +23,23 @@ impl Module for Collections {
                 )),
             }),
         );
+
+        backend.register(
+            "collections.reduce",
+            NativeCall::Function(|interpreter, state, args| match args {
+                [Value::Vector(values), initial, lambda] => {
+                    let mut acc = initial.clone();
+                    for item in values.borrow().iter() {
+                        acc = interpreter.call_as_function(state, lambda, &[acc, item.clone()])?;
+                    }
+                    Ok(acc)
+                }
+                _ => Err(Error::invalid_bridge_call(
+                    "collections.reduce",
+                    &format!("Expected a list, an initial value, and a function, but got: {:?}", args),
+                )),
+            }),
+        );
     }
 
     fn prelude() -> &'static str {
@@ -45,6 +62,15 @@ mod tests {
                 Value::Number(3),
                 Value::Number(4)
             ]))
+        );
+    }
+
+    #[test]
+    fn test_reduce() {
+        let mut runtime = interpreter::Runtime::new();
+        assert_eq!(
+            runtime.parse_and_evaluate_expr("(reduce [1 2 3] 0 +)"),
+            Ok(Value::Number(6))
         );
     }
 }
